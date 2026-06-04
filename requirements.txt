@@ -1,0 +1,2 @@
+# Runtime dependencies are intentionally empty.
+# The current prototype uses only the Python standard library.
