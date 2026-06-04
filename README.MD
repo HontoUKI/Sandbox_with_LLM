@@ -2,14 +2,12 @@
 
 ![Prototype](https://img.shields.io/badge/status-prototype-orange)
 ![Ollama](https://img.shields.io/badge/LLM-Ollama%20optional-blue)
-![CI](https://img.shields.io/badge/CI-planned-lightgrey)
-![License](https://img.shields.io/badge/license-MIT%20planned-lightgrey)
-
-> License note: I plan to use MIT for this project. `LICENSE` and git initialization are planned for a later step.
+[![CI](https://github.com/HontoUKI/Sandbox_with_LLM/actions/workflows/ci.yml/badge.svg?branch=self-esteem)](https://github.com/HontoUKI/Sandbox_with_LLM/actions/workflows/ci.yml)
+![License](https://img.shields.io/badge/license-MIT-green)
 
 ## For Developers And Reviewers
 
-Start with [docs/START_HERE.md](docs/START_HERE.md).
+Start with [docs/START_HERE.md](docs/START_HERE.md). It gives the fastest overview of the runtime, storage, tests, and review checklist.
 
 The deeper technical notes are split into:
 
@@ -18,11 +16,11 @@ The deeper technical notes are split into:
 
 ## What Is This Project?
 
-This is a CLI prototype for a self-dialogue bot that helps the user look at themselves through observable facts.
+This is a CLI prototype for a self-dialogue bot that helps the user look at themselves through observable facts instead of vague self-judgment.
 
 The core idea is simple: instead of asking the model to flatter the user or produce generic encouragement, the bot asks for concrete episodes, checks whether they are objective enough, stores them as memory, and later uses those facts as context.
 
-The context layer keeps accepted user content, extracts objective facts from it, creates vectors for content, memory, and summaries, and uses vector search before building the final LLM prompt.
+The context layer keeps accepted user content, extracts objective facts from it, creates vectors for content, memory, and summaries, then uses vector search before building the final LLM prompt.
 
 It is meant to work like a mirror for decisions, skills, effort, and patterns the user may routinely ignore.
 
@@ -30,7 +28,7 @@ It is meant to work like a mirror for decisions, skills, effort, and patterns th
 
 People often underestimate their own achievements, skills, and judgment because they remember feelings more easily than facts.
 
-This bot is an attempt to build a colder, more grounded view from the side: not "you are great", but "this happened, you did this, and it counts as evidence".
+This bot is an attempt to build a colder, more grounded view from the side: not "you are great", but "this happened, you did this, and it counts as evidence."
 
 ## Requirements
 
@@ -96,6 +94,15 @@ cache/final_prompt.log
 
 Open that file after tests to check that the LLM prompt is not polluted by broken encoding, irrelevant memory, or unsupported claims.
 
+## CI
+
+GitHub Actions runs on push and pull request for:
+
+- Ubuntu and Windows
+- Python 3.11 and 3.12
+- `py_compile`
+- `unittest`
+
 ## File Structure
 
 ```text
@@ -115,3 +122,7 @@ docs/                   project notes and implementation specs
 Try it yourself. Use it as a small experiment in self-dialogue, fact retrieval, and LLM-assisted reflection.
 
 It is not therapy, a diagnosis tool, or a replacement for professional help. It is a prototype for making self-reflection less vague and more evidence-based.
+
+## License
+
+MIT. See [LICENSE](LICENSE).
