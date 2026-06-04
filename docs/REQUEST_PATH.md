@@ -10,7 +10,18 @@ This document describes how a user answer moves through the current prototype.
 4. If the answer is too short or below `OBJECTIVITY_THRESHOLD`, the bot asks again.
 5. Accepted answers are saved through `ContextManager.ingest_user_content()`.
 6. The bot prints a short reflection and the objectivity score.
-7. At the end, the bot prints a portrait built from accepted facts.
+7. The next question is directed by `build_prompt_little_director()` using the previous objectivity score.
+8. After `QUESTION_COUNT` accepted answers, the bot builds and saves a summary.
+
+## Little Director
+
+`src/context/build_prompt_little_director.py` turns objectivity meta into a next-question strategy.
+
+- low score: ask for one concrete episode with action and result
+- medium score: ask for one missing observable detail
+- high score: ask how the user discounts or interprets the already named fact
+
+This keeps the bot from either accepting vague self-judgment too early or turning concrete facts into generic praise.
 
 ## Objectivity Score
 
@@ -39,7 +50,7 @@ If Ollama is unavailable or returns invalid JSON, the extractor falls back to lo
 
 ## Content And Memory Write
 
-Accepted answers are written as three JSONL layers.
+Accepted answers and summaries are written as four JSONL layers.
 
 Content record:
 
@@ -92,13 +103,36 @@ Vector record:
 }
 ```
 
+Summary record:
+
+```json
+{
+  "id": "uuid",
+  "text": "User said... You answered... Meta objectivity...",
+  "created_at": "2026-06-04T00:00:00+00:00",
+  "meta": {
+    "kind": "dialogue_summary",
+    "source": "five_turn_dialogue",
+    "turn_count": 5
+  },
+  "turns": [
+    {
+      "question": "What did you solve?",
+      "user_answer": "I fixed a broken script.",
+      "bot_answer": "This is concrete.",
+      "objectivity_score": 87
+    }
+  ]
+}
+```
+
 ## Retrieval
 
 `ContextManager.vector_search(query)` does this:
 
 1. extracts a compact search query
 2. embeds the search query
-3. loads content and memory records by ID
+3. loads content, memory, and summary records by ID
 4. loads vector records
 5. calculates cosine similarity
 6. returns the highest scoring `MemoryMatch` items
@@ -111,7 +145,7 @@ Vector record:
 
 1. takes the user prompt or last chat message
 2. sends it through the mini extractor
-3. searches vectors across `content` and `memory`
+3. searches vectors across `content`, `memory`, and `summary`
 4. injects the best matches into the LLM context
 
 ## Prompt Construction

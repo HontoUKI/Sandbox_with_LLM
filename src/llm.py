@@ -20,10 +20,12 @@ class OllamaLLM:
     def __init__(
         self,
         model: str = "llama3",
+        embedding_model: str | None = None,
         host: str = "http://localhost:11434",
         timeout: float = 60.0,
     ) -> None:
         self.model = model
+        self.embedding_model = embedding_model or model
         self.host = host.rstrip("/")
         self.timeout = timeout
 
@@ -73,7 +75,7 @@ class OllamaLLM:
     def embed(self, text: str) -> list[float]:
         """Return an embedding vector for text using Ollama."""
         payload = {
-            "model": self.model,
+            "model": self.embedding_model,
             "prompt": text,
         }
         data = self._post("/api/embeddings", payload)

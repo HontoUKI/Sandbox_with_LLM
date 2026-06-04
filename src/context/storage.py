@@ -25,6 +25,7 @@ class JsonlStorage:
         self.base_dir = Path(base_dir)
         self.content_path = self.base_dir / "content.jsonl"
         self.memories_path = self.base_dir / "memories.jsonl"
+        self.summaries_path = self.base_dir / "summaries.jsonl"
         self.vectors_path = self.base_dir / "vectors.jsonl"
         self._ensure_files()
 
@@ -33,6 +34,9 @@ class JsonlStorage:
 
     def add_memory(self, record: dict[str, Any]) -> None:
         self._append_jsonl(self.memories_path, record)
+
+    def add_summary(self, record: dict[str, Any]) -> None:
+        self._append_jsonl(self.summaries_path, record)
 
     def add_vector(self, record: dict[str, Any]) -> None:
         self._append_jsonl(self.vectors_path, record)
@@ -43,6 +47,9 @@ class JsonlStorage:
     def load_memories(self) -> list[dict[str, Any]]:
         return self._read_jsonl(self.memories_path)
 
+    def load_summaries(self) -> list[dict[str, Any]]:
+        return self._read_jsonl(self.summaries_path)
+
     def load_vectors(self) -> list[dict[str, Any]]:
         return self._read_jsonl(self.vectors_path)
 
@@ -50,6 +57,7 @@ class JsonlStorage:
         self.base_dir.mkdir(parents=True, exist_ok=True)
         self.content_path.touch(exist_ok=True)
         self.memories_path.touch(exist_ok=True)
+        self.summaries_path.touch(exist_ok=True)
         self.vectors_path.touch(exist_ok=True)
 
     @staticmethod

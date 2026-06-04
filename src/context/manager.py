@@ -7,6 +7,7 @@ from math import sqrt
 from uuid import uuid4
 
 from src.context.extractor import FactExtractor
+from src.context.extractor import LOW_OBJECTIVITY_MARKERS
 from src.context.storage import JsonlStorage
 from src.llm import OllamaError, OllamaLLM
 
@@ -165,6 +166,43 @@ class ContextManager:
 
         return memory
 
+    def add_summary(
+        self,
+        text: str,
+        turns: list[dict],
+        source: str = "five_turn_dialogue",
+    ) -> dict:
+        summary_id = str(uuid4())
+        created_at = datetime.now(timezone.utc).isoformat()
+        summary = {
+            "id": summary_id,
+            "text": text,
+            "created_at": created_at,
+            "meta": {
+                "kind": "dialogue_summary",
+                "source": source,
+                "turn_count": len(turns),
+            },
+            "turns": turns,
+        }
+        embedding, embedding_source = self._embed_with_source(text)
+        vector = {
+            "id": summary_id,
+            "text": text,
+            "embedding": embedding,
+            "created_at": created_at,
+            "meta": {
+                "source": embedding_source,
+                "record_type": "summary",
+                "summary_kind": summary["meta"]["kind"],
+            },
+        }
+
+        self.storage.add_summary(summary)
+        self.storage.add_vector(vector)
+
+        return summary
+
     def objectivity_score(self, text: str) -> int:
         if self.llm is None:
             return self._heuristic_objectivity_score(text)
@@ -231,6 +269,9 @@ class ContextManager:
         for memory in self.storage.load_memories():
             records[memory["id"]] = memory
 
+        for summary in self.storage.load_summaries():
+            records[summary["id"]] = summary
+
         return records
 
     def _embed_with_source(self, text: str) -> tuple[list[float], str]:
@@ -244,6 +285,10 @@ class ContextManager:
 
     @staticmethod
     def _heuristic_objectivity_score(text: str) -> int:
+        lowered = text.lower()
+        if any(marker in lowered for marker in LOW_OBJECTIVITY_MARKERS):
+            return 15
+
         words = text.split()
         score = min(40 + len(words) * 4, 80)
 
@@ -267,8 +312,10 @@ class ContextManager:
             "noticed",
         )
 
-        if any(marker in text.lower() for marker in action_markers):
+        if any(marker in lowered for marker in action_markers):
             score += 10
+        elif len(words) < 5:
+            score -= 20
 
         return max(0, min(100, score))
 

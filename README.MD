@@ -22,7 +22,7 @@ This is a CLI prototype for a self-dialogue bot that helps the user look at them
 
 The core idea is simple: instead of asking the model to flatter the user or produce generic encouragement, the bot asks for concrete episodes, checks whether they are objective enough, stores them as memory, and later uses those facts as context.
 
-The context layer keeps accepted user content, extracts objective facts from it, creates vectors for both layers, and uses vector search before building the final LLM prompt.
+The context layer keeps accepted user content, extracts objective facts from it, creates vectors for content, memory, and summaries, and uses vector search before building the final LLM prompt.
 
 It is meant to work like a mirror for decisions, skills, effort, and patterns the user may routinely ignore.
 
@@ -59,9 +59,11 @@ Edit `.env` after copying [.env.example](.env.example):
 ```env
 OLLAMA_HOST=http://localhost:11434
 OLLAMA_MODEL=gemma3:4b
+OLLAMA_EMBED_MODEL=nomic-embed-text
 OLLAMA_TIMEOUT=2.0
 CONTEXT_LENGTH=8192
-OBJECTIVITY_THRESHOLD=45
+OBJECTIVITY_THRESHOLD=50
+QUESTION_COUNT=5
 USER_NAME=User
 ```
 
@@ -75,6 +77,7 @@ Accepted user content and extracted facts are stored locally in:
 
 - `user_data/content.jsonl`
 - `user_data/memories.jsonl`
+- `user_data/summaries.jsonl`
 - `user_data/vectors.jsonl`
 
 These files are ignored by git because they contain user-specific memory.
@@ -100,6 +103,7 @@ main.py                 CLI entry point
 src/llm.py              Ollama HTTP wrapper
 src/context/storage.py  JSONL storage
 src/context/extractor.py objective fact and search query extraction
+src/context/build_prompt_little_director.py next-question direction from objectivity meta
 src/context/manager.py  memory write/retrieval logic
 src/context/wrapper.py  LLM wrapper with memory injection
 tests/                  unittest suite

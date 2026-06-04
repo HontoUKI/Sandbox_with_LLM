@@ -14,6 +14,7 @@ Files:
 
 ```text
 user_data/memories.jsonl
+user_data/summaries.jsonl
 user_data/vectors.jsonl
 user_data/content.jsonl
 ```
@@ -93,6 +94,37 @@ The `content.jsonl` record that produced this objective fact, when available.
 
 ## Vector Record
 
+## Summary Record
+
+Each line in `summaries.jsonl` is one JSON object created after a five-turn dialogue block.
+
+Required fields:
+
+```json
+{
+  "id": "string uuid",
+  "text": "summary text",
+  "created_at": "ISO-8601 UTC timestamp",
+  "meta": {
+    "kind": "dialogue_summary",
+    "source": "five_turn_dialogue",
+    "turn_count": 5
+  },
+  "turns": [
+    {
+      "question": "string",
+      "user_answer": "string",
+      "bot_answer": "string",
+      "objectivity_score": 87
+    }
+  ]
+}
+```
+
+Summaries also get vector records so they can be retrieved as a higher-level context layer.
+
+## Vector Record
+
 Each line in `vectors.jsonl` is one JSON object.
 
 Required fields:
@@ -124,6 +156,7 @@ The fallback exists so tests and CLI mode work without an LLM server.
 
 - `content` - vector points to a `content.jsonl` record
 - `memory` - vector points to a `memories.jsonl` record
+- `summary` - vector points to a `summaries.jsonl` record
 
 ## Retrieval Contract
 
@@ -174,9 +207,11 @@ Current tests verify:
 - memory and vector records share the same ID
 - content and vector records share the same ID
 - content ingestion extracts objective facts
+- summaries are saved after five-turn dialogue blocks
 - `objectivity_score` is stored in memory meta
 - local hash vectors are used without Ollama
 - retrieval returns relevant memory
 - vector search can return both content and memory layers
+- vector search can return summary records
 - final prompt log is generated in `cache/final_prompt.log`
 - final prompt has no dirty encoding artifacts

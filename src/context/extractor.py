@@ -27,6 +27,18 @@ ACTION_MARKERS = (
     "solved",
 )
 
+LOW_OBJECTIVITY_MARKERS = (
+    "\u043d\u0435 \u0437\u043d\u0430\u044e",
+    "\u043d\u0435 \u0431\u044b\u043b\u043e",
+    "\u043d\u0435\u0442 \u0442\u0430\u043a\u0438\u0445",
+    "\u043d\u0430\u0432\u0435\u0440\u043d\u043e",
+    "\u0432\u0440\u043e\u0434\u0435",
+    "\u043a\u0430\u0436\u0435\u0442\u0441\u044f",
+    "i don't know",
+    "not sure",
+    "maybe",
+)
+
 
 @dataclass
 class ExtractedContext:
@@ -118,13 +130,19 @@ class FactExtractor:
 
     @staticmethod
     def _heuristic_objectivity_score(text: str) -> int:
+        lowered = text.lower()
+        if any(marker in lowered for marker in LOW_OBJECTIVITY_MARKERS):
+            return 15
+
         words = text.split()
         score = min(40 + len(words) * 4, 80)
 
         if any(char.isdigit() for char in text):
             score += 10
 
-        if any(marker in text.lower() for marker in ACTION_MARKERS):
+        if any(marker in lowered for marker in ACTION_MARKERS):
             score += 10
+        elif len(words) < 5:
+            score -= 20
 
         return max(0, min(100, score))

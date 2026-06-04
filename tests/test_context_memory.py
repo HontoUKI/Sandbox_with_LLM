@@ -4,6 +4,8 @@ import unittest
 from pathlib import Path
 from tempfile import TemporaryDirectory
 
+from main import DialogueTurn, generate_question
+from src.context.build_prompt_little_director import build_prompt_little_director
 from src.context.extractor import FactExtractor
 from src.context.manager import ContextManager, has_dirty_encoding_artifacts
 from src.context.storage import JsonlStorage
@@ -11,12 +13,16 @@ from src.context.wrapper import ContextualLLM
 
 
 class DummyLLM:
+    def __init__(self) -> None:
+        self.last_prompt = ""
+
     def generate(
         self,
         prompt: str,
         max_tokens: int = 2048,
         temperature: float = 0.7,
     ) -> str:
+        self.last_prompt = prompt
         return prompt
 
 
@@ -27,9 +33,11 @@ class ContextMemoryTests(unittest.TestCase):
 
             self.assertTrue(storage.content_path.exists())
             self.assertTrue(storage.memories_path.exists())
+            self.assertTrue(storage.summaries_path.exists())
             self.assertTrue(storage.vectors_path.exists())
             self.assertEqual(storage.load_content(), [])
             self.assertEqual(storage.load_memories(), [])
+            self.assertEqual(storage.load_summaries(), [])
             self.assertEqual(storage.load_vectors(), [])
 
     def test_add_fact_writes_memory_vector_and_meta(self) -> None:
@@ -114,6 +122,45 @@ class ContextMemoryTests(unittest.TestCase):
             self.assertIn("content", {match.record_type for match in matches})
             self.assertIn("memory", {match.record_type for match in matches})
 
+    def test_add_summary_writes_summary_and_vector(self) -> None:
+        with TemporaryDirectory() as directory:
+            storage = JsonlStorage(directory)
+            context = ContextManager(storage=storage)
+            summary = context.add_summary(
+                "User said they fixed a script. Meta objectivity: 87/100.",
+                turns=[
+                    {
+                        "question": "What did you solve?",
+                        "user_answer": "I fixed a broken script.",
+                        "bot_answer": "This is concrete.",
+                        "objectivity_score": 87,
+                    }
+                ],
+            )
+
+            summaries = storage.load_summaries()
+            vectors = storage.load_vectors()
+
+            self.assertEqual(len(summaries), 1)
+            self.assertEqual(len(vectors), 1)
+            self.assertEqual(summaries[0]["id"], summary["id"])
+            self.assertEqual(vectors[0]["id"], summary["id"])
+            self.assertEqual(vectors[0]["meta"]["record_type"], "summary")
+
+    def test_vector_search_can_return_summary_layer(self) -> None:
+        with TemporaryDirectory() as directory:
+            storage = JsonlStorage(directory)
+            context = ContextManager(storage=storage)
+            context.add_summary(
+                "User said they fixed a script. Meta objectivity: 87/100.",
+                turns=[],
+            )
+
+            matches = context.vector_search("fixed script", limit=1)
+
+            self.assertEqual(len(matches), 1)
+            self.assertEqual(matches[0].record_type, "summary")
+
     def test_extractor_builds_search_query_and_fact(self) -> None:
         extracted = FactExtractor().extract(
             "I fixed a broken script alone and shipped it. I felt lucky."
@@ -125,6 +172,34 @@ class ContextMemoryTests(unittest.TestCase):
         )
         self.assertIn("fixed", extracted.search_query)
         self.assertGreaterEqual(extracted.objectivity_score, 50)
+
+    def test_low_objectivity_rejection_markers_score_low(self) -> None:
+        context = ContextManager()
+
+        self.assertLess(context.objectivity_score("Не знаю... Не было таких"), 50)
+
+    def test_little_director_selects_modes_by_objectivity(self) -> None:
+        self.assertEqual(build_prompt_little_director(20).mode, "fact_extraction")
+        self.assertEqual(build_prompt_little_director(70).mode, "fact_deepening")
+        self.assertEqual(build_prompt_little_director(90).mode, "fact_to_self_judgment")
+
+    def test_generate_question_includes_director_block(self) -> None:
+        llm = DummyLLM()
+        question = generate_question(
+            llm,
+            [
+                DialogueTurn(
+                    question="Что произошло?",
+                    user_answer="Я сдал проект во время болезни.",
+                    bot_answer="Факт принят.",
+                    objectivity_score=85,
+                )
+            ],
+        )
+
+        self.assertIn("Director mode: fact_to_self_judgment", llm.last_prompt)
+        self.assertIn("Следующий вопрос:", llm.last_prompt)
+        self.assertTrue(question)
 
     def test_final_prompt_log_is_clean(self) -> None:
         with TemporaryDirectory() as directory:
