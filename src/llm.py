@@ -22,11 +22,21 @@ class OllamaLLM:
         model: str = "llama3",
         embedding_model: str | None = None,
         host: str = "http://localhost:11434",
+        chat_url: str | None = None,
+        embed_url: str | None = None,
         timeout: float = 60.0,
     ) -> None:
         self.model = model
         self.embedding_model = embedding_model or model
         self.host = host.rstrip("/")
+        self.chat_url = self._normalize_endpoint(
+            chat_url or self.host,
+            "/api/chat",
+        )
+        self.embed_url = self._normalize_endpoint(
+            embed_url or self.host,
+            "/api/embeddings",
+        )
         self.timeout = timeout
 
     def generate(
@@ -35,18 +45,23 @@ class OllamaLLM:
         max_tokens: int = 2048,
         temperature: float = 0.7,
     ) -> str:
-        """Generate plain text from a single prompt."""
+        """Generate plain text from a single prompt using the chat endpoint."""
         payload = {
             "model": self.model,
-            "prompt": prompt,
+            "messages": [{"role": "user", "content": prompt}],
             "stream": False,
             "options": {
                 "num_predict": max_tokens,
                 "temperature": temperature,
             },
         }
-        data = self._post("/api/generate", payload)
-        return self._require_text(data, "response")
+        data = self._post_url(self.chat_url, payload)
+        message = data.get("message")
+
+        if not isinstance(message, dict):
+            raise OllamaError(f"Ollama returned no chat message: {data}")
+
+        return self._require_text(message, "content")
 
     def chat(
         self,
@@ -64,7 +79,7 @@ class OllamaLLM:
                 "temperature": temperature,
             },
         }
-        data = self._post("/api/chat", payload)
+        data = self._post_url(self.chat_url, payload)
         message = data.get("message")
 
         if not isinstance(message, dict):
@@ -78,7 +93,7 @@ class OllamaLLM:
             "model": self.embedding_model,
             "prompt": text,
         }
-        data = self._post("/api/embeddings", payload)
+        data = self._post_url(self.embed_url, payload)
         embedding = data.get("embedding")
 
         if not isinstance(embedding, list):
@@ -108,7 +123,21 @@ class OllamaLLM:
         return self.objectivity_score(text) >= threshold
 
     def _post(self, path: str, payload: dict[str, Any]) -> dict[str, Any]:
-        url = f"{self.host}{path}"
+        return self._post_url(f"{self.host}{path}", payload)
+
+    @staticmethod
+    def _normalize_endpoint(url: str, default_path: str) -> str:
+        url = url.rstrip("/")
+
+        if url.endswith(default_path):
+            return url
+
+        if url.endswith("/api"):
+            return f"{url}{default_path.removeprefix('/api')}"
+
+        return f"{url}{default_path}"
+
+    def _post_url(self, url: str, payload: dict[str, Any]) -> dict[str, Any]:
         body = json.dumps(payload).encode("utf-8")
         request = Request(
             url,
@@ -123,7 +152,7 @@ class OllamaLLM:
         except HTTPError as exc:
             error_body = exc.read().decode("utf-8", errors="replace")
             raise OllamaError(f"Ollama returned HTTP {exc.code}: {error_body}") from exc
-        except URLError as exc:
+        except (TimeoutError, URLError) as exc:
             raise OllamaError(f"Ollama request failed: {exc}") from exc
 
         try:

@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from src.context.manager import ContextManager, MemoryMatch
+from src.context.manager import ContextManager, DialogueMessage, MemoryMatch
 from src.llm import OllamaLLM
 
 
@@ -19,10 +19,12 @@ class ContextualLLM:
         llm: OllamaLLM,
         context_manager: ContextManager | None = None,
         memory_limit: int = 5,
+        history_limit: int = 5,
     ) -> None:
         self.llm = llm
         self.context_manager = context_manager or ContextManager(llm=llm)
         self.memory_limit = memory_limit
+        self.history_limit = history_limit
 
     def generate(
         self,
@@ -46,7 +48,7 @@ class ContextualLLM:
         query = self._last_user_message(messages)
         memory_message = {
             "role": "system",
-            "content": self._build_memory_context(query),
+            "content": self.build_context_for_turn(query),
         }
         return self.llm.chat(
             [memory_message, *messages],
@@ -67,26 +69,75 @@ class ContextualLLM:
         )
 
     def build_prompt_for_log(self, prompt: str) -> str:
-        context = self._build_memory_context(prompt)
+        context = self.build_context_for_turn(prompt)
         return f"{context}\n\nUser request:\n{prompt}"
 
-    def _build_memory_context(self, query: str) -> str:
-        matches = self.context_manager.vector_search(
+    def build_context_for_turn(self, query: str) -> str:
+        recent_messages = self.context_manager.recent_dialogue_messages(
+            limit=self.history_limit,
+        )
+        recent_ids = {message.record_id for message in recent_messages}
+        context_parts = []
+
+        if recent_messages:
+            context_parts.append(self._build_recent_history_context(recent_messages))
+
+        memory_context = self._build_memory_context(
             query,
-            limit=self.memory_limit,
+            exclude_ids=recent_ids,
+            exclude_texts={message.text for message in recent_messages},
         )
 
+        if memory_context:
+            context_parts.append(memory_context)
+
+        if not context_parts:
+            return "User memory is empty. Do not invent facts about the user."
+
+        return "\n\n".join(context_parts)
+
+    def _build_memory_context(
+        self,
+        query: str,
+        exclude_ids: set[str] | None = None,
+        exclude_texts: set[str] | None = None,
+    ) -> str:
+        matches = self.context_manager.vector_search(
+            query,
+            limit=self.memory_limit * 2,
+            exclude_ids=exclude_ids,
+        )
+        normalized_excluded = {
+            self._normalize_text(text)
+            for text in (exclude_texts or set())
+        }
+        matches = [
+            match
+            for match in matches
+            if self._normalize_text(match.text) not in normalized_excluded
+        ][: self.memory_limit]
+        return self._format_memory_context(matches)
+
+    def _format_memory_context(self, matches: list[MemoryMatch]) -> str:
         if not matches:
-            return (
-                "User memory is empty. Do not invent facts about the user."
-            )
+            return ""
 
         lines = [
-            "User memory. Use only as factual context. Do not flatter, "
-            "invent, or add unsupported traits:",
+            "Relevant stored context. Use only as support; do not repeat it as if new:",
         ]
         lines.extend(self._format_memory(match) for match in matches)
 
+        return "\n".join(lines)
+
+    @staticmethod
+    def _build_recent_history_context(messages: list[DialogueMessage]) -> str:
+        lines = [
+            "Recent dialogue history. Use this as the immediate conversation state:",
+        ]
+        lines.extend(
+            f"- [{message.role}] {message.text}"
+            for message in messages
+        )
         return "\n".join(lines)
 
     @staticmethod
@@ -104,3 +155,7 @@ class ContextualLLM:
                 return message.get("content", "")
 
         return messages[-1].get("content", "") if messages else ""
+
+    @staticmethod
+    def _normalize_text(text: str) -> str:
+        return " ".join(text.lower().split())

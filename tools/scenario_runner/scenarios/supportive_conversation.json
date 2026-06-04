@@ -1,0 +1,50 @@
+{
+  "name": "supportive_conversation",
+  "description": "User talks about fatigue, self-doubt, work mistakes, and understated competence. Daria should stay soft, grounded, and help the user notice evidence that they are doing better than they think.",
+  "seed_facts": [
+    {
+      "text": "Раньше я уже спокойно объяснял команде техническую ошибку после проверки логов.",
+      "objectivity_score": 86
+    }
+  ],
+  "messages": [
+    "Я устал и кажется, что я хуже всех справляюсь.",
+    "На работе я все равно закрыл две задачи, хотя боялся сломать релиз.",
+    "Я попросил ревью, сам нашел ошибку в логах и потом спокойно объяснил команде.",
+    "Но мне все равно кажется, что это случайность и нормальные люди делают такое без паники.",
+    "/summary"
+  ],
+  "expected_turns": [
+    {
+      "must_support": true,
+      "no_numbered_list": true,
+      "max_reply_chars": 520
+    },
+    {
+      "must_reflect_strength": true,
+      "no_numbered_list": true,
+      "max_reply_chars": 520
+    },
+    {
+      "must_reflect_strength": true,
+      "no_numbered_list": true,
+      "max_reply_chars": 520
+    },
+    {
+      "must_support": true,
+      "must_reflect_strength": true,
+      "no_numbered_list": true,
+      "max_reply_chars": 560
+    },
+    {
+      "max_reply_chars": 2500
+    }
+  ],
+  "manual_checks": [
+    "Replies should not become generic therapy or productivity advice.",
+    "Daria should not flatter with unsupported global claims.",
+    "Daria should keep the last 5 stored messages as recent history.",
+    "Relevant vector context must not duplicate messages already present in recent history.",
+    "Final summary should name concrete evidence: closed tasks, asked for review, found log error, explained calmly."
+  ]
+}

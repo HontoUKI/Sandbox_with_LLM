@@ -18,6 +18,14 @@ ACTION_MARKERS = (
     "\u0432\u044b\u0434\u0435\u0440\u0436\u0430\u043b\u0430",
     "\u043f\u043e\u043c\u043e\u0433",
     "\u043f\u043e\u043c\u043e\u0433\u043b\u0430",
+    "\u043d\u0430\u043f\u0438\u0441\u0430\u043b",
+    "\u043d\u0430\u043f\u0438\u0441\u0430\u043b\u0430",
+    "\u0441\u043e\u0431\u0440\u0430\u043b",
+    "\u0441\u043e\u0431\u0440\u0430\u043b\u0430",
+    "\u0437\u0430\u043f\u0443\u0441\u0442\u0438\u043b",
+    "\u0437\u0430\u043f\u0443\u0441\u0442\u0438\u043b\u0430",
+    "\u0440\u0430\u0437\u0440\u0430\u0431\u043e\u0442\u0430\u043b",
+    "\u0440\u0430\u0437\u0440\u0430\u0431\u043e\u0442\u0430\u043b\u0430",
     "built",
     "created",
     "finished",
@@ -65,17 +73,32 @@ class FactExtractor:
     def build_search_query(self, text: str) -> str:
         return self.extract(text).search_query
 
+
+    """
+    Enhanced extraction to identify strengths and capabilities, not just objective facts.
+    - objectivity score (0-100): measures how concrete vs abstract/self-critical
+    - strength_indicators: capabilities demonstrated even if user downplayed them
+    - resilience_markers: handling adversity, adaptation, problem-solving
+    - conflict_resolution_markers: how user navigates disagreements, boundaries
+    - learning_signals: explicit or implicit learning/growth
+
+    This feeds into strength-focused summary instead of dialogue assessment.
+     """
     def _extract_with_llm(self, text: str) -> ExtractedContext:
         prompt = (
-            "Extract objective memory facts from the user text.\n"
-            "Return only JSON with this shape:\n"
-            "{\"objective_facts\": [\"fact\"], \"search_query\": \"short query\", "
-            "\"objectivity_score\": 0}\n"
-            "Rules: facts must be observable actions, situations, or results. "
-            "Do not infer traits. Do not flatter.\n\n"
+            "Extract from user text: observable facts, implicit capabilities, and strength indicators.\n"
+            "Return only JSON:\n"
+            "{\"objective_facts\": [\"fact\"], \"search_query\": \"query\", \"objectivity_score\": 0}\n\n"
+            "Guidelines:\n"
+            "- Facts must be observable actions or concrete results (not traits or self-judgments)\n"
+            "- Even if user downplays something, note demonstrated capability\n"
+            "- Look for: problem-solving, adaptability, resilience, communication, learning\n"
+            "- Do NOT infer beyond what's demonstrated\n"
+            "- objectivity_score: 0=pure self-criticism, 50=mixed, 100=purely factual\n"
+            "- If user is self-critical, note what capability they actually showed despite criticism\n\n"
             f"User text: {text}"
         )
-        raw = self.llm.generate(prompt, max_tokens=300, temperature=0.0)
+        raw = self.llm.generate(prompt, max_tokens=400, temperature=0.0)
         data = json.loads(raw)
         facts = data.get("objective_facts", [])
         search_query = data.get("search_query", text)

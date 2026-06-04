@@ -36,6 +36,15 @@ class MemoryMatch:
     record_id: str | None = None
 
 
+@dataclass
+class DialogueMessage:
+    role: str
+    text: str
+    meta: dict
+    record_id: str
+    created_at: str
+
+
 class BuildingPromptManager:
     """Small prompt registry kept for compatibility with the first draft."""
 
@@ -68,6 +77,7 @@ class ContextManager:
         prompt: str | None = None,
         objectivity_score: int | None = None,
         source: str = "user_input",
+        intent: str = "objective_fact",
     ) -> dict:
         extracted = self.extractor.extract(text)
         score = objectivity_score
@@ -84,6 +94,8 @@ class ContextManager:
             "meta": {
                 "kind": "user_content",
                 "source": source,
+                "role": "user",
+                "intent": intent,
                 "prompt": prompt,
                 "objectivity_score": score,
                 "search_query": extracted.search_query,
@@ -120,6 +132,93 @@ class ContextManager:
 
         content["extracted_facts"] = facts
         return content
+
+    def add_dialogue_content(
+        self,
+        text: str,
+        prompt: str | None = None,
+        bot_response: str | None = None,
+        intent: str = "conversation",
+        objectivity_score: int | None = None,
+        source: str = "dialogue",
+        role: str = "user",
+        linked_content_id: str | None = None,
+        use_extractor: bool = False,
+    ) -> dict:
+        score = objectivity_score
+
+        if score is None:
+            score = self.objectivity_score(text)
+
+        content_id = str(uuid4())
+        created_at = datetime.now(timezone.utc).isoformat()
+        search_query = (
+            self.extractor.build_search_query(text)
+            if use_extractor
+            else self._local_search_query(text)
+        )
+        content = {
+            "id": content_id,
+            "text": text,
+            "created_at": created_at,
+            "meta": {
+                "kind": "dialogue_message",
+                "source": source,
+                "role": role,
+                "intent": intent,
+                "prompt": prompt,
+                "bot_response": bot_response,
+                "linked_content_id": linked_content_id,
+                "objectivity_score": score,
+                "search_query": search_query,
+                "extracted_fact_count": 0,
+            },
+        }
+        embedding, embedding_source = self._embed_with_source(search_query)
+        vector = {
+            "id": content_id,
+            "text": search_query,
+            "embedding": embedding,
+            "created_at": created_at,
+            "meta": {
+                "source": embedding_source,
+                "record_type": "content",
+                "content_kind": content["meta"]["kind"],
+            },
+        }
+
+        self.storage.add_content(content)
+        self.storage.add_vector(vector)
+
+        return content
+
+    def extract_dialogue_summary_facts(
+        self,
+        turns: list[dict],
+        source_summary_id: str | None = None,
+    ) -> list[dict]:
+        facts = []
+
+        for turn in turns:
+            user_text = str(turn.get("user_answer") or "").strip()
+
+            if not user_text:
+                continue
+
+            extracted = self.extractor.extract(user_text)
+            score = int(turn.get("objectivity_score") or extracted.objectivity_score)
+
+            for fact_text in extracted.objective_facts:
+                facts.append(
+                    self.add_fact(
+                        text=fact_text,
+                        prompt=turn.get("question"),
+                        objectivity_score=score,
+                        source_content_id=source_summary_id,
+                    )
+                )
+
+        return facts
 
     def add_fact(
         self,
@@ -224,19 +323,31 @@ class ContextManager:
         query: str,
         limit: int = 5,
         record_types: set[str] | None = None,
+        exclude_ids: set[str] | None = None,
+        use_extractor: bool = False,
     ) -> list[MemoryMatch]:
-        extracted_query = self.extractor.build_search_query(query)
+        extracted_query = (
+            self.extractor.build_search_query(query)
+            if use_extractor
+            else self._local_search_query(query)
+        )
         query_vector = self.embed(extracted_query)
         records = self._searchable_records()
         matches = []
+        excluded = exclude_ids or set()
 
         for vector_record in self.storage.load_vectors():
+            record_id = vector_record.get("id")
+
+            if record_id in excluded:
+                continue
+
             record_type = vector_record.get("meta", {}).get("record_type", "memory")
 
             if record_types is not None and record_type not in record_types:
                 continue
 
-            record = records.get(vector_record.get("id"))
+            record = records.get(record_id)
 
             if record is None:
                 continue
@@ -259,6 +370,39 @@ class ContextManager:
 
         matches.sort(key=lambda match: match.score, reverse=True)
         return matches[:limit]
+
+    def recent_dialogue_messages(self, limit: int = 5) -> list[DialogueMessage]:
+        messages = []
+
+        for content in self.storage.load_content():
+            meta = content.get("meta", {})
+            kind = meta.get("kind")
+
+            if kind not in {"dialogue_message", "user_content"}:
+                continue
+
+            role = meta.get("role")
+
+            if role not in {"user", "assistant", "system"}:
+                role = "user" if kind == "user_content" else "assistant"
+
+            record_id = content.get("id")
+            text = content.get("text", "")
+
+            if not record_id or not text:
+                continue
+
+            messages.append(
+                DialogueMessage(
+                    role=role,
+                    text=text,
+                    meta=meta,
+                    record_id=record_id,
+                    created_at=content.get("created_at", ""),
+                )
+            )
+
+        return messages[-limit:]
 
     def _searchable_records(self) -> dict[str, dict]:
         records = {}
@@ -306,6 +450,14 @@ class ContextManager:
             "\u0432\u044b\u0434\u0435\u0440\u0436\u0430\u043b\u0430",
             "\u043f\u043e\u043c\u043e\u0433",
             "\u043f\u043e\u043c\u043e\u0433\u043b\u0430",
+            "\u043d\u0430\u043f\u0438\u0441\u0430\u043b",
+            "\u043d\u0430\u043f\u0438\u0441\u0430\u043b\u0430",
+            "\u0441\u043e\u0431\u0440\u0430\u043b",
+            "\u0441\u043e\u0431\u0440\u0430\u043b\u0430",
+            "\u0437\u0430\u043f\u0443\u0441\u0442\u0438\u043b",
+            "\u0437\u0430\u043f\u0443\u0441\u0442\u0438\u043b\u0430",
+            "\u0440\u0430\u0437\u0440\u0430\u0431\u043e\u0442\u0430\u043b",
+            "\u0440\u0430\u0437\u0440\u0430\u0431\u043e\u0442\u0430\u043b\u0430",
             "finished",
             "fixed",
             "handled",
@@ -329,6 +481,11 @@ class ContextManager:
             vector[index] += 1.0
 
         return vector
+
+    @staticmethod
+    def _local_search_query(text: str, max_words: int = 24) -> str:
+        words = text.lower().split()
+        return " ".join(words[:max_words]) if words else text
 
     @staticmethod
     def _cosine_similarity(left: list[float], right: list[float]) -> float:

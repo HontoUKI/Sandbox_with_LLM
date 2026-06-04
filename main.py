@@ -1,11 +1,15 @@
 from dataclasses import dataclass
 import os
 from pathlib import Path
-from random import choice
 import sys
 
 from src.context.build_prompt_little_director import build_director_prompt_block
+from src.context.dialogue_intent import (
+    build_response_for_intent,
+    classify_user_message,
+)
 from src.context.manager import ContextManager
+from src.context.wrapper import ContextualLLM
 from src.llm import OllamaError, OllamaLLM
 
 
@@ -15,35 +19,21 @@ if hasattr(sys.stdout, "reconfigure"):
     sys.stdout.reconfigure(encoding="utf-8")
 
 
+SUMMARY_COMMAND = "/summary"
+EXIT_COMMANDS = {"/exit", "/quit"}
+
+
 @dataclass
 class DialogueTurn:
     question: str
     user_answer: str
     bot_answer: str
     objectivity_score: int
+    intent: str = "conversation"
 
 
-FALLBACK_QUESTIONS = [
-    "Вспомни один эпизод, где ты сделал(а) что-то трудное без внешнего давления. Что именно ты сделал(а)?",
-    "Где твоя наблюдательность дала практический результат? Назови ситуацию, не качество.",
-    "Какую проблему ты решил(а) сам(а), пусть даже неидеально? Что было на выходе?",
-    "С чем к тебе реально приходили другие люди? Назови запрос и что ты сделал(а).",
-    "Когда ты продолжил(а) работу, хотя было физически или эмоционально тяжело? Что было сделано?",
-]
-
-COLD_REFLECTIONS = [
-    "Это уже ближе к факту: есть действие, ситуация и след.",
-    "Без украшений: это можно сохранить как наблюдаемое свидетельство.",
-    "Здесь меньше самооценки и больше материала, с которым можно работать.",
-    "Не героизируем. Просто фиксируем: это произошло, и ты там действовал(а).",
-]
-
-WARM_REFLECTIONS = [
-    "Это похоже на часть опыта, которую ты обычно не засчитываешь себе.",
-    "В этом есть опора: не настроение, а конкретный эпизод.",
-    "Такой ответ уже можно использовать как доказательство, а не как комплимент.",
-    "Здесь видно действие, а не только отношение к себе.",
-]
+class BotStartupError(RuntimeError):
+    """Raised when required runtime services are unavailable."""
 
 
 def load_env(path: str = ".env") -> None:
@@ -76,173 +66,314 @@ def env_int(name: str, default: int) -> int:
         return default
 
 
-def make_llm() -> OllamaLLM | None:
+def make_llm() -> OllamaLLM:
+    llm = OllamaLLM(
+        model=os.getenv("OLLAMA_MODEL", "llama3"),
+        embedding_model=os.getenv(
+            "EMBED_MODEL",
+            os.getenv("OLLAMA_EMBED_MODEL", "nomic-embed-text"),
+        ),
+        host=os.getenv("OLLAMA_HOST", "http://127.0.0.1:11434"),
+        chat_url=os.getenv("OLLAMA_CHAT"),
+        embed_url=os.getenv("OLLAMA_EMBED"),
+        timeout=env_float("OLLAMA_TIMEOUT", 120.0),
+    )
+
     try:
-        llm = OllamaLLM(
-            model=os.getenv("OLLAMA_MODEL", "llama3"),
-            embedding_model=os.getenv("OLLAMA_EMBED_MODEL", "nomic-embed-text"),
-            host=os.getenv("OLLAMA_HOST", "http://localhost:11434"),
-            timeout=env_float("OLLAMA_TIMEOUT", 2.0),
-        )
         llm.generate("Reply with one word: ok", max_tokens=4, temperature=0.0)
-        return llm
-    except OllamaError:
-        return None
+    except OllamaError as exc:
+        raise BotStartupError(
+            "Ollama is unavailable or the model is not responding. "
+            f"Details: {exc}"
+        ) from exc
+
+    return llm
 
 
-def generate_question(llm: OllamaLLM | None, turns: list[DialogueTurn]) -> str:
-    fallback = FALLBACK_QUESTIONS[min(len(turns), len(FALLBACK_QUESTIONS) - 1)]
+def is_summary_command(text: str) -> bool:
+    return text.strip().lower() == SUMMARY_COMMAND
 
-    if llm is None:
-        return fallback
 
+def is_exit_command(text: str) -> bool:
+    return text.strip().lower() in EXIT_COMMANDS
+
+
+def generate_question(
+    llm: OllamaLLM,
+    turns: list[DialogueTurn],
+    context: ContextManager | None = None,
+) -> str:
     previous_turn = turns[-1] if turns else None
-    director_block = build_director_prompt_block(
-        previous_turn.objectivity_score if previous_turn else None,
-        previous_turn.user_answer if previous_turn else "",
-    )
-    history = "\n".join(
-        f"Q: {turn.question}\nUser: {turn.user_answer}\nScore: {turn.objectivity_score}/100"
-        for turn in turns
-    )
-    prompt = (
-        "Ты задаешь вопросы для бота объективной самооценки.\n"
-        "Задай ОДИН короткий вопрос на русском языке.\n"
-        "Цель: вытащить конкретный наблюдаемый факт о пользователе: действие, ситуация, результат.\n"
-        "Не проси качество характера. Не утешай. Не используй списки.\n\n"
-        f"{director_block}\n\n"
-        f"История:\n{history or 'Пока пусто.'}\n\n"
-        "Следующий вопрос:"
-    )
+
+    if not turns:
+        prompt = (
+            "Ты Дарья. Начинаешь живой разговор. Спроси один короткий теплый вопрос, "
+            "как подруга, которой правда интересно. Без анкеты и без делового тона. "
+            "Можно звучать чуть неидеально, по-человечески. На русском."
+        )
+    else:
+        director_block = build_director_prompt_block(
+            previous_turn.objectivity_score if previous_turn else None,
+            previous_turn.user_answer if previous_turn else "",
+        )
+        support_context = ""
+        history_context = "История разговора уже дана в блоке опоры выше."
+
+        if context is not None:
+            support_context = ContextualLLM(
+                llm=llm,
+                context_manager=context,
+                memory_limit=5,
+                history_limit=5,
+            ).build_context_for_turn(previous_turn.user_answer)
+        else:
+            history = "\n".join(
+                (
+                    f"Q: {turn.question}\n"
+                    f"You: {turn.user_answer}\n"
+                    f"I said: {turn.bot_answer}"
+                )
+                for turn in turns[-5:]
+            )
+            history_context = f"История разговора:\n{history}"
+
+        prompt = (
+            "Ты Дарья. Ведешь живой разговор, не интервью. "
+            "Слушаешь, иногда можешь помолчать в тексте, не обязана каждый раз вытаскивать факт. "
+            "Можно мягко ругнуться вроде 'блин' или 'черт', если это звучит естественно, "
+            "но не оскорбляй пользователя и не дави.\n\n"
+            "Следующий ход должен быть одним коротким вопросом или очень коротким ожиданием, "
+            "например: '... я рядом. продолжай.'\n"
+            "Не используй списки. Не объясняй, что ты делаешь.\n\n"
+            f"{director_block}\n\n"
+            f"Опора из памяти и последних сообщений:\n{support_context or 'Пока нет сохраненной опоры.'}\n\n"
+            f"{history_context}\n\n"
+            "Мой следующий ход:"
+        )
 
     try:
-        question = llm.generate(prompt, max_tokens=120, temperature=0.4).strip()
-    except OllamaError:
-        return fallback
+        question = llm.generate(prompt, max_tokens=120, temperature=0.55).strip()
+    except OllamaError as exc:
+        raise BotStartupError(f"Could not generate the next question through LLM. Details: {exc}") from exc
 
     question = question.strip().strip('"')
 
-    if not question or "\n" in question or len(question) > 220:
-        return fallback
+    if not question or len(question) > 260:
+        raise BotStartupError("LLM returned an invalid question. Try again.")
 
     return question
 
 
-def build_reflection(turn_index: int, objectivity_score: int) -> str:
-    reflection_pool = COLD_REFLECTIONS if turn_index % 2 == 0 else WARM_REFLECTIONS
-    return f"{choice(reflection_pool)} Meta объективности: {objectivity_score}/100."
+def handle_user_message(
+    question: str,
+    answer: str,
+    context: ContextManager,
+    objectivity_threshold: int,
+) -> DialogueTurn:
+    objectivity_score = context.objectivity_score(answer)
+    intent = classify_user_message(answer, objectivity_score, objectivity_threshold)
+    fallback = build_response_for_intent(intent, objectivity_score)
+    bot_answer = generate_bot_answer(
+        question=question,
+        answer=answer,
+        context=context,
+        intent_kind=intent.kind,
+        objectivity_score=objectivity_score,
+        fallback=fallback,
+    )
+
+    user_content = context.add_dialogue_content(
+        text=answer,
+        prompt=question,
+        bot_response=bot_answer,
+        intent=intent.kind,
+        objectivity_score=objectivity_score,
+        role="user",
+        use_extractor=False,
+    )
+    context.add_dialogue_content(
+        text=bot_answer,
+        prompt=question,
+        intent=f"{intent.kind}_response",
+        objectivity_score=objectivity_score,
+        source="assistant_response",
+        role="assistant",
+        linked_content_id=user_content["id"],
+        use_extractor=False,
+    )
+
+    return DialogueTurn(
+        question=question,
+        user_answer=answer,
+        bot_answer=bot_answer,
+        objectivity_score=objectivity_score,
+        intent=intent.kind,
+    )
+
+
+def generate_bot_answer(
+    question: str,
+    answer: str,
+    context: ContextManager,
+    intent_kind: str,
+    objectivity_score: int,
+    fallback: str,
+) -> str:
+    if context.llm is None:
+        return fallback
+
+    support_context = ContextualLLM(
+        llm=context.llm,
+        context_manager=context,
+        memory_limit=5,
+        history_limit=5,
+    ).build_context_for_turn(answer)
+    prompt = (
+        "Ты Дарья. Отвечаешь человеку в живом диалоге.\n"
+        "Тон: близко, мягко, честно, иногда чуть грубо по-живому. "
+        "Можно редко использовать мягкий мат: 'блин', 'черт', 'пиздец' - только если это уместно "
+        "как сочувствие ситуации, не как оскорбление человека.\n"
+        "Можно выдержать молчаливую паузу текстом: '...'. Можно сказать 'я рядом, продолжай'.\n"
+        "Не превращай ответ в терапевтический шаблон, чеклист или лекцию. Не используй списки.\n"
+        "Если человек себя занижает, помоги увидеть конкретное действие или качество, которое он уже показал.\n"
+        "Ответь 1-3 короткими предложениями на русском.\n\n"
+        f"Опора из памяти:\n{support_context}\n\n"
+        f"Предыдущий ход Дарьи: {question}\n"
+        f"Ответ пользователя: {answer}\n"
+        f"Intent: {intent_kind}\n"
+        f"Objectivity score: {objectivity_score}\n\n"
+        "Ответ Дарьи:"
+    )
+
+    try:
+        response = context.llm.generate(prompt, max_tokens=180, temperature=0.55).strip()
+    except OllamaError:
+        return fallback
+
+    response = response.strip().strip('"')
+
+    if not response or len(response) > 900 or has_multiline_list(response):
+        return fallback
+
+    return response
+
+
+def has_multiline_list(text: str) -> bool:
+    lines = [line.strip() for line in text.splitlines() if line.strip()]
+    numbered = 0
+
+    for line in lines:
+        if len(line) >= 2 and line[0].isdigit() and line[1] in {".", ")"}:
+            numbered += 1
+
+    return numbered >= 2
 
 
 def ask_turn(
     question: str,
     context: ContextManager,
     objectivity_threshold: int,
-    turn_index: int,
 ) -> DialogueTurn:
     print(f"\n{question}")
     answer = input("> ").strip()
-    objectivity_score = context.objectivity_score(answer)
-
-    while len(answer) < 8 or objectivity_score < objectivity_threshold:
-        print(
-            "Это пока не факт. Нужен один эпизод: что случилось, что ты сделал(а), "
-            "какой был результат."
-        )
-        answer = input("> ").strip()
-        objectivity_score = context.objectivity_score(answer)
-
-    bot_answer = build_reflection(turn_index, objectivity_score)
-    context.ingest_user_content(
-        text=answer,
-        prompt=question,
-        objectivity_score=objectivity_score,
-    )
-
-    print(bot_answer)
-    return DialogueTurn(
-        question=question,
-        user_answer=answer,
-        bot_answer=bot_answer,
-        objectivity_score=objectivity_score,
-    )
+    turn = handle_user_message(question, answer, context, objectivity_threshold)
+    print(turn.bot_answer)
+    return turn
 
 
-def build_summary(llm: OllamaLLM | None, turns: list[DialogueTurn]) -> str:
+def build_summary(llm: OllamaLLM, turns: list[DialogueTurn]) -> str:
     raw_turns = "\n\n".join(
         "\n".join(
             [
-                f"Вопрос: {turn.question}",
-                f"User сказал: {turn.user_answer}",
-                f"Ты ответил: {turn.bot_answer}",
-                f"Meta объективности: {turn.objectivity_score}/100",
+                f"Q: {turn.question}",
+                f"You: {turn.user_answer}",
+                f"I: {turn.bot_answer}",
             ]
         )
         for turn in turns
     )
 
-    fallback = (
-        "Summary after 5 turns\n\n"
-        f"{raw_turns}\n\n"
-        "Короткий анализ: в ответах нужно отделять реальные эпизоды от самоописаний. "
-        "Сохранять стоит только то, где есть действие, ситуация и результат."
-    )
-
-    if llm is None:
-        return fallback
-
     prompt = (
-        "Сделай короткое summary пяти ходов диалога для разработчика и следующего LLM-запроса.\n"
-        "Формат каждого пункта сохраняй близко к:\n"
-        "User сказал:\nТы ответил:\nMeta объективности:\n"
-        "После пунктов добавь 3 строки анализа: сильные факты, слабые места, следующий фокус.\n"
-        "Не добавляй выдуманных фактов и не льсти.\n\n"
-        f"{raw_turns}"
+        "Ты Дарья. Человек попросил /summary. Суммируешь живой разговор.\n\n"
+        "Сначала коротко назови, что происходило эмоционально. "
+        "Потом честно покажи, где человек лучше, чем сам сейчас считает. "
+        "Опирайся только на сказанное в разговоре: действия, выдержку, выборы, способ думать, просьбы о помощи.\n"
+        "Можно звучать живо и чуть шероховато, но без пустой мотивации и без лести. "
+        "Не делай длинный список. Лучше 3-5 плотных абзацев.\n\n"
+        f"Разговор:\n{raw_turns}"
     )
 
     try:
-        return llm.generate(prompt, max_tokens=700, temperature=0.2).strip()
-    except OllamaError:
-        return fallback
+        return llm.generate(prompt, max_tokens=900, temperature=0.35).strip()
+    except OllamaError as exc:
+        raise BotStartupError(f"Could not build summary through LLM. Details: {exc}") from exc
 
 
-def save_summary(context: ContextManager, llm: OllamaLLM | None, turns: list[DialogueTurn]) -> str:
+def save_summary(context: ContextManager, llm: OllamaLLM, turns: list[DialogueTurn]) -> str:
     summary = build_summary(llm, turns)
-    context.add_summary(
-        text=summary,
-        turns=[
-            {
-                "question": turn.question,
-                "user_answer": turn.user_answer,
-                "bot_answer": turn.bot_answer,
-                "objectivity_score": turn.objectivity_score,
-            }
-            for turn in turns
-        ],
+    turn_records = [
+        {
+            "question": turn.question,
+            "user_answer": turn.user_answer,
+            "bot_answer": turn.bot_answer,
+            "intent": turn.intent,
+            "objectivity_score": turn.objectivity_score,
+        }
+        for turn in turns
+    ]
+    summary_record = context.add_summary(text=summary, turns=turn_records)
+    context.extract_dialogue_summary_facts(
+        turns=turn_records,
+        source_summary_id=summary_record["id"],
     )
     return summary
 
 
 def run_bot() -> None:
     load_env()
-    print("Бот объективной самооценки")
-    print("Отвечай конкретными фактами. Не 'я добрый', а 'я сделал вот это'.")
-    print("Можно писать коротко. Главное - без самоуменьшения.")
+    print("Привет, я Дарья.")
+    print("Давай без анкеты. Просто говори, что есть. Я рядом.")
+    print(f"Когда захочешь итог - напиши {SUMMARY_COMMAND}. Выйти: /exit.")
+    print()
 
-    llm = make_llm()
+    try:
+        llm = make_llm()
+    except BotStartupError as exc:
+        print(f"\nОшибка запуска: {exc}")
+        return
+
     context = ContextManager(llm=llm)
     objectivity_threshold = env_int("OBJECTIVITY_THRESHOLD", 50)
-    question_count = env_int("QUESTION_COUNT", 5)
-    turns = []
+    turns: list[DialogueTurn] = []
+    question = generate_question(llm, turns, context=context)
 
-    for turn_index in range(1, question_count + 1):
-        question = generate_question(llm, turns)
-        turn = ask_turn(question, context, objectivity_threshold, turn_index)
+    while True:
+        print(f"\n{question}")
+        answer = input("> ").strip()
+
+        if is_exit_command(answer):
+            break
+
+        if is_summary_command(answer):
+            if not turns:
+                print("Пока нечего суммировать. Скажи мне хоть пару фраз сначала.")
+            else:
+                summary = save_summary(context, llm, turns)
+                print("\nSummary по диалогу:")
+                print(summary)
+                print("\nСохранила summary и извлекла факты из разговора.")
+            question = "... я здесь. продолжим?"
+            continue
+
+        turn = handle_user_message(
+            question=question,
+            answer=answer,
+            context=context,
+            objectivity_threshold=objectivity_threshold,
+        )
         turns.append(turn)
-
-    summary = save_summary(context, llm, turns)
-    print("\nSummary по 5 ответам:")
-    print(summary)
-    print("\nСохранено в user_data: content.jsonl, memories.jsonl, vectors.jsonl, summaries.jsonl.")
+        print(turn.bot_answer)
+        question = generate_question(llm, turns, context=context)
 
 
 if __name__ == "__main__":
