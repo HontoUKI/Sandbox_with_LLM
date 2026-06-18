@@ -16,3 +16,4 @@ Each branch is a separate prototype with its own goal, README, tests, and runtim
 | Branch | Prototype | Purpose | Status |
 |---|---|---|---|
 | [self-esteem](docs/self-esteem/self-esteem.md) | Daria | Reflective dialogue bot that summarizes user's real strengths from conversation evidence | Prototype |
+| [little-agent-planner](docs/little-agent-planner/little-agent-planner.md) | Lisa | Curious idea-planning agent that evaluates rough project ideas, researches context, and packs handoff briefs | Prototype |
