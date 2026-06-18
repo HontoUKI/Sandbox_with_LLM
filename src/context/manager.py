@@ -98,6 +98,7 @@ class ContextManager:
                 "intent": intent,
                 "prompt": prompt,
                 "objectivity_score": score,
+                "idea_scores": extracted.idea_scores(),
                 "search_query": extracted.search_query,
                 "extracted_fact_count": len(extracted.objective_facts),
             },
@@ -126,6 +127,7 @@ class ContextManager:
                     text=fact_text,
                     prompt=prompt,
                     objectivity_score=score,
+                    idea_scores=extracted.idea_scores(),
                     source_content_id=content_id,
                 )
             )
@@ -140,6 +142,7 @@ class ContextManager:
         bot_response: str | None = None,
         intent: str = "conversation",
         objectivity_score: int | None = None,
+        idea_scores: dict | None = None,
         source: str = "dialogue",
         role: str = "user",
         linked_content_id: str | None = None,
@@ -170,6 +173,7 @@ class ContextManager:
                 "bot_response": bot_response,
                 "linked_content_id": linked_content_id,
                 "objectivity_score": score,
+                "idea_scores": idea_scores,
                 "search_query": search_query,
                 "extracted_fact_count": 0,
             },
@@ -207,6 +211,10 @@ class ContextManager:
 
             extracted = self.extractor.extract(user_text)
             score = int(turn.get("objectivity_score") or extracted.objectivity_score)
+            idea_scores = turn.get("idea_scores")
+
+            if not isinstance(idea_scores, dict):
+                idea_scores = extracted.idea_scores()
 
             for fact_text in extracted.objective_facts:
                 facts.append(
@@ -214,6 +222,7 @@ class ContextManager:
                         text=fact_text,
                         prompt=turn.get("question"),
                         objectivity_score=score,
+                        idea_scores=idea_scores,
                         source_content_id=source_summary_id,
                     )
                 )
@@ -225,6 +234,7 @@ class ContextManager:
         text: str,
         prompt: str | None = None,
         objectivity_score: int | None = None,
+        idea_scores: dict | None = None,
         source_content_id: str | None = None,
     ) -> dict:
         score = objectivity_score
@@ -237,6 +247,12 @@ class ContextManager:
         meta = {
             "kind": "objective_fact",
             "objectivity_score": score,
+            "idea_scores": idea_scores or {
+                "cohesion_score": score,
+                "complexity_score": 0,
+                "technicality_score": 0,
+                "feasibility_score": score,
+            },
             "is_objective": score >= 50,
             "prompt": prompt,
             "source_content_id": source_content_id,
@@ -301,6 +317,44 @@ class ContextManager:
         self.storage.add_vector(vector)
 
         return summary
+
+    def add_research_analysis(
+        self,
+        text: str,
+        query: str,
+        sources: list[dict],
+        source: str = "duckduckgo",
+    ) -> dict:
+        analysis_id = str(uuid4())
+        created_at = datetime.now(timezone.utc).isoformat()
+        analysis = {
+            "id": analysis_id,
+            "text": text,
+            "created_at": created_at,
+            "meta": {
+                "kind": "web_research_analysis",
+                "source": source,
+                "query": query,
+                "sources": sources,
+            },
+        }
+        embedding, embedding_source = self._embed_with_source(text)
+        vector = {
+            "id": analysis_id,
+            "text": text,
+            "embedding": embedding,
+            "created_at": created_at,
+            "meta": {
+                "source": embedding_source,
+                "record_type": "summary",
+                "summary_kind": analysis["meta"]["kind"],
+            },
+        }
+
+        self.storage.add_summary(analysis)
+        self.storage.add_vector(vector)
+
+        return analysis
 
     def objectivity_score(self, text: str) -> int:
         if self.llm is None:

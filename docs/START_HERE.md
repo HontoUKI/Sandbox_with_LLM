@@ -1,74 +1,76 @@
 # Start Here
 
-This document is the quick entry point for developers, reviewers, and future Codex sessions.
+This document is the quick entry point for developers, reviewers, and future
+Codex sessions.
 
 ## Project Goal
 
-The project is a prototype dialogue bot named **Daria**. She has empathetic conversations with users, listens to their stories, and then reveals the real strengths they may have underestimated.
+The project is a prototype CLI little-agent planner named **Lisa**. Lisa helps a
+user clarify rough project ideas by asking simple, naive, technically useful
+questions. The goal is not emotional support; the goal is objective idea
+evaluation and implementation planning.
 
 Key principles:
 
-- The dialogue is **natural and friend-like**, not an interview
-- Assessment happens in the **final summary**, not during conversation
-- Daria is **extremely honest** and does not flatter or minimize real limitations
-- The bot extracts concrete facts but focuses on revealing **implicit capabilities** users may have downplayed
-- Observations about strengths are grounded in what the user actually demonstrated
+- Lisa sounds like a curious teenager: direct, simple, and skeptical when needed.
+- Ordinary dialogue is LLM-first. There are no local canned response fallbacks.
+- Assessment happens in `/summary`, not as visible turn-by-turn scoring.
+- `/summary` evaluates the idea, risks, missing assumptions, and implementation steps.
+- `/packing` turns the latest summary and conversation into a handoff Markdown file.
 
 ## Current Runtime
 
-The current app is a CLI:
+Run the CLI:
 
 ```powershell
 python main.py
 ```
 
-Ollama is required for dialogue generation and summaries. The bot is LLM-first and has no fallback mode.
-
-The CLI is open-ended just-chatting. Regular turns store user/assistant messages
-for recent-history and vector support. Fact extraction runs when the user types
-`/summary`, not on every turn.
+Ollama is required for dialogue, summary, packing field extraction, and
+embeddings. `/summary` can also use multi-step DuckDuckGo research and may take
+longer.
 
 ## Important Files
 
 ```text
-main.py                 CLI dialogue, Daria persona, summary generation
-src/llm.py              Ollama wrapper
-src/context/storage.py  JSONL files for memory and vectors
-src/context/extractor.py fact extraction + implicit strength detection
-src/context/dialogue_intent.py response tone and intent classification
-src/context/build_prompt_little_director.py question direction by objectivity level
-src/context/manager.py  objectivity scoring, memory writes, retrieval
-src/context/wrapper.py  prompt construction with memory context
-tests/                  unittest suite
+main.py                                      CLI commands, Lisa persona, summary, packing
+src/llm.py                                   Ollama wrapper
+src/context/storage.py                       JSONL files for content, memories, summaries, vectors
+src/context/extractor.py                     idea extraction + four score axes
+src/context/build_prompt_little_director.py  question direction by cohesion
+src/context/manager.py                       memory writes, summaries, web research analysis
+src/context/wrapper.py                       prompt construction with memory context
+docs/HANDOFF_TEMPLATE.md                     template filled by /packing
+tools/scenario_runner/                       real Ollama scenario runner
+tests/                                       unittest suite
 ```
+
+`src/context/dialogue_intent.py` was removed. Do not reintroduce local response
+tone fallbacks unless the product direction explicitly changes.
 
 ## Local Data
 
 Runtime memory is written to:
 
 ```text
-user_data/content.jsonl      (all dialogue messages)
-user_data/memories.jsonl     (extracted objective facts)
-user_data/summaries.jsonl    (final 5-turn summaries)
-user_data/vectors.jsonl      (embeddings for search)
+user_data/content.jsonl      dialogue messages
+user_data/memories.jsonl     extracted idea statements after summary
+user_data/summaries.jsonl    dialogue summaries and web research analyses
+user_data/vectors.jsonl      embeddings for search
 ```
 
-These files are intentionally ignored by git.
-
-Test prompt logs are written to:
+Packing output is written to:
 
 ```text
-cache/final_prompt.log
+.local/*_handoff.md
 ```
-
-This file is also ignored by git.
 
 ## Development Commands
 
 Compile check:
 
 ```powershell
-python -m py_compile main.py src/llm.py src/context/*.py tests/test_context_memory.py
+python -m py_compile main.py src\llm.py src\context\build_prompt_little_director.py src\context\extractor.py src\context\manager.py src\context\storage.py src\context\wrapper.py tools\scenario_runner\__main__.py tests\test_context_memory.py
 ```
 
 Run tests:
@@ -77,42 +79,41 @@ Run tests:
 python -m unittest discover -s tests
 ```
 
-Run a real Ollama scenario replay with transcript artifacts:
+Run the real Ollama Excel parser scenario:
 
 ```powershell
-python -m tools.scenario_runner --scenario tools/scenario_runner/scenarios/supportive_conversation.json --out-dir cache/scenario_runner
+python -m tools.scenario_runner --scenario tools/scenario_runner/scenarios/excel_parser_idea.json --out-dir cache/scenario_runner
 ```
-
-Scenario replays follow the Maria runner shape: JSON scenario in, turn-by-turn
-transcript JSON and Markdown review summary out. The supportive scenario checks
-soft support, grounded strength reflection, recent-history windowing, and vector
-retrieval dedupe.
 
 ## Dialogue Flow
 
-1. Bot greets the user as Daria and sets warm expectations
-2. For each turn:
-   - Daria asks a natural question (driven by `build_prompt_little_director`)
-   - User answers
-   - Objectivity score is computed internally but **not shown to user**
-   - Bot responds as just-chatting, with a more alive voice, pauses, and occasional mild profanity when appropriate
-   - User and assistant messages are stored; facts are not extracted yet
-3. When the user types `/summary`, bot builds a summary that:
-   - Reviews what happened
-   - **Highlights real strengths user demonstrated or underestimated**
-   - Notes where user is being too harsh on themselves
-   - Suggests development directions (not criticisms)
-   - Runs extractor over the dialogue and stores objective memories
+1. Lisa asks a short first question.
+2. For each user answer:
+   - the extractor computes idea scores;
+   - the answer and Lisa's response are stored as dialogue content;
+   - no objective memories are written yet;
+   - the next question is guided by cohesion.
+3. `/summary`:
+   - warns the user that web research can take time;
+   - asks the LLM to propose several search queries;
+   - searches DuckDuckGo and records result titles/URLs;
+   - fetches text from a few pages for analysis;
+   - stores only LLM analysis plus source titles/URLs, not raw page content;
+   - writes the idea summary and extracts memory facts from the dialogue.
+4. `/packing`:
+   - uses the latest summary if the dialogue has not changed;
+   - asks the LLM for structured handoff fields;
+   - fills `docs/HANDOFF_TEMPLATE.md`;
+   - writes the result to `.local/` or the scenario artifact directory.
 
 ## Review Checklist
 
-- Does Daria sound like a friend, not a bot?
-- Are objective scores computed internally but not reported during dialogue?
-- Is the summary the primary place where strengths are highlighted?
-- Does the summary look for implicit capabilities, not just stated facts?
-- Are all dialogue turns stored (boundary, deprecation, conversation)?
-- Are only objective facts (not all dialogue) stored as memories?
-- Does `meta.objectivity_score` exist for stored content?
-- Does vector storage align with memory IDs?
-- Does question generation adapt to objectivity level?
-- Are broken encoding artifacts avoided?
+- Does Lisa ask one useful question rather than lecture?
+- Does `/summary` criticize weak assumptions when needed?
+- Does `/summary` avoid unsupported encouragement?
+- Does web research use query planning, link collection, page analysis, then summary?
+- Does web research store analysis only, not raw page content?
+- Does `/packing` produce a concrete project name, goal, risks, and next steps?
+- Are idea scores present in stored meta?
+- Are broken encoding artifacts avoided in generated files?
+- Do unit tests and at least one real Ollama scenario pass?

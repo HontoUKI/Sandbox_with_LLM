@@ -4,9 +4,20 @@ import unittest
 from pathlib import Path
 from tempfile import TemporaryDirectory
 
-from main import DialogueTurn, generate_question, handle_user_message
+from main import (
+    DialogueTurn,
+    create_handoff_copy,
+    build_summary,
+    analyze_web_pages,
+    generate_question,
+    handle_user_message,
+    parse_search_queries,
+    save_packing,
+    save_summary,
+    WebPageText,
+    WebSearchResult,
+)
 from src.context.build_prompt_little_director import build_prompt_little_director
-from src.context.dialogue_intent import classify_user_message
 from src.context.extractor import FactExtractor
 from src.context.manager import ContextManager, has_dirty_encoding_artifacts
 from src.context.storage import JsonlStorage
@@ -26,7 +37,41 @@ class DummyLLM:
         temperature: float = 0.7,
     ) -> str:
         self.last_prompt = prompt
+        if "Придумай поисковые запросы" in prompt:
+            return (
+                '{"queries":["python excel parser openpyxl pandas",'
+                '"excel to json python column mapping",'
+                '"python excel parsing validation errors"]}'
+            )
+        if "Analyze web research" in prompt:
+            return "External page analysis: openpyxl and pandas are visible options."
+        if "Extract structured handoff fields" in prompt:
+            return (
+                '{"project_name":"Python Excel parser",'
+                '"goal":"Read Excel columns and convert selected data to JSON.",'
+                '"target_user":"A user who needs Excel data prepared for later processing.",'
+                '"constraints":"Column detection, Excel file format, validation, and JSON schema need decisions.",'
+                '"decisions":"Use Python and produce JSON from selected Excel columns.",'
+                '"open_question_1":"How are required columns identified?",'
+                '"open_question_2":"What JSON schema should be produced?",'
+                '"open_question_3":"Which Excel formats must be supported?",'
+                '"risk_1":"Unclear column selection",'
+                '"risk_1_reason":"The parser cannot work reliably until required columns are defined.",'
+                '"risk_1_check":"Choose name-based, index-based, or configured mapping.",'
+                '"risk_2":"Weak error handling",'
+                '"risk_2_reason":"Malformed files and missing columns can break processing.",'
+                '"risk_2_check":"Define validation and error reporting rules.",'
+                '"next_step_1":"Define the JSON schema.",'
+                '"next_step_1_result":"A target output contract.",'
+                '"next_step_2":"Define column mapping rules.",'
+                '"next_step_2_result":"A reliable extraction rule.",'
+                '"next_step_3":"Build a small parser for one .xlsx example.",'
+                '"next_step_3_result":"A testable prototype."}'
+            )
         return self.response
+
+    def embed(self, text: str) -> list[float]:
+        return [1.0, 0.0, 0.0]
 
 
 class ContextMemoryTests(unittest.TestCase):
@@ -233,6 +278,27 @@ class ContextMemoryTests(unittest.TestCase):
             self.assertEqual(vectors[0]["id"], summary["id"])
             self.assertEqual(vectors[0]["meta"]["record_type"], "summary")
 
+    def test_add_research_analysis_writes_analysis_not_content(self) -> None:
+        with TemporaryDirectory() as directory:
+            storage = JsonlStorage(directory)
+            context = ContextManager(storage=storage)
+            analysis = context.add_research_analysis(
+                "External analysis: similar tools exist; verify demand.",
+                query="idea planner agent risks",
+                sources=[
+                    {
+                        "title": "Example source",
+                        "url": "https://example.com",
+                    }
+                ],
+            )
+
+            self.assertEqual(storage.load_content(), [])
+            summaries = storage.load_summaries()
+            self.assertEqual(summaries[0]["id"], analysis["id"])
+            self.assertEqual(summaries[0]["meta"]["kind"], "web_research_analysis")
+            self.assertEqual(summaries[0]["meta"]["query"], "idea planner agent risks")
+
     def test_vector_search_can_return_summary_layer(self) -> None:
         with TemporaryDirectory() as directory:
             storage = JsonlStorage(directory)
@@ -258,6 +324,15 @@ class ContextMemoryTests(unittest.TestCase):
         )
         self.assertIn("fixed", extracted.search_query)
         self.assertGreaterEqual(extracted.objectivity_score, 50)
+        self.assertEqual(
+            set(extracted.idea_scores()),
+            {
+                "cohesion_score",
+                "complexity_score",
+                "technicality_score",
+                "feasibility_score",
+            },
+        )
 
     def test_low_objectivity_rejection_markers_score_low(self) -> None:
         context = ContextManager()
@@ -269,23 +344,10 @@ class ContextMemoryTests(unittest.TestCase):
 
         self.assertGreaterEqual(context.objectivity_score("Написал бота в телеграмме"), 50)
 
-    def test_intent_classifier_respects_boundaries(self) -> None:
-        intent = classify_user_message("Не дави на меня", 15, 50)
-
-        self.assertEqual(intent.kind, "boundary")
-        self.assertFalse(intent.should_store_fact)
-        self.assertTrue(intent.should_store_content)
-
-    def test_intent_classifier_detects_self_deprecation(self) -> None:
-        intent = classify_user_message("Я жестко туплю и не считаюсь с чужим мнением", 20, 50)
-
-        self.assertEqual(intent.kind, "self_deprecation")
-        self.assertFalse(intent.should_store_fact)
-
-    def test_handle_user_message_stores_boundary_as_content_only(self) -> None:
+    def test_handle_user_message_stores_dialogue_content_only(self) -> None:
         with TemporaryDirectory() as directory:
             storage = JsonlStorage(directory)
-            context = ContextManager(storage=storage)
+            context = ContextManager(storage=storage, llm=DummyLLM())
             turn = handle_user_message(
                 "Вспомни один эпизод.",
                 "Не дави на меня",
@@ -293,8 +355,7 @@ class ContextMemoryTests(unittest.TestCase):
                 objectivity_threshold=50,
             )
 
-            self.assertEqual(turn.intent, "boundary")
-            self.assertIn("дав", turn.bot_answer)
+            self.assertEqual(turn.intent, "idea_turn")
             contents = storage.load_content()
             self.assertEqual(len(contents), 2)
             self.assertEqual(storage.load_memories(), [])
@@ -303,7 +364,7 @@ class ContextMemoryTests(unittest.TestCase):
     def test_handle_user_message_stores_assistant_response_for_fact(self) -> None:
         with TemporaryDirectory() as directory:
             storage = JsonlStorage(directory)
-            context = ContextManager(storage=storage)
+            context = ContextManager(storage=storage, llm=DummyLLM())
             turn = handle_user_message(
                 "What did you build?",
                 "I wrote a telegram bot and tested it",
@@ -319,7 +380,7 @@ class ContextMemoryTests(unittest.TestCase):
                 if content["meta"].get("role") == "assistant"
             ]
 
-            self.assertEqual(turn.intent, "objective_fact")
+            self.assertEqual(turn.intent, "idea_turn")
             self.assertEqual(len(contents), 2)
             self.assertEqual(memories, [])
             self.assertEqual(len(assistant_messages), 1)
@@ -349,10 +410,149 @@ class ContextMemoryTests(unittest.TestCase):
             self.assertGreaterEqual(len(facts), 1)
             self.assertGreaterEqual(len(storage.load_memories()), 1)
 
+    def test_handoff_copy_is_created_from_template(self) -> None:
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            template = root / "HANDOFF_TEMPLATE.md"
+            output_dir = root / ".local"
+            template.write_text(
+                "# {project_name}\n\n{project_summary}\n\n{cohesion_score}\n{conversation_notes}\n",
+                encoding="utf-8",
+            )
+            turn = DialogueTurn(
+                question="What does it do?",
+                user_answer="A tiny planning agent for ideas",
+                bot_answer="So it helps you explain the idea first?",
+                objectivity_score=80,
+                idea_scores={
+                    "cohesion_score": 80,
+                    "complexity_score": 45,
+                    "technicality_score": 55,
+                    "feasibility_score": 70,
+                },
+                intent="objective_fact",
+            )
+
+            output_path = create_handoff_copy(
+                "Tiny Planner\nA small agent for thinking through ideas.",
+                [turn],
+                template_path=template,
+                output_dir=output_dir,
+            )
+            content = output_path.read_text(encoding="utf-8")
+
+            self.assertTrue(output_path.exists())
+            self.assertIn("Tiny Planner", content)
+            self.assertIn("A tiny planning agent for ideas", content)
+            self.assertIn("80", content)
+
+    def test_summary_and_packing_are_separate(self) -> None:
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            storage = JsonlStorage(root / "data")
+            context = ContextManager(storage=storage, llm=DummyLLM())
+            template = root / "HANDOFF_TEMPLATE.md"
+            output_dir = root / ".local"
+            template.write_text(
+                "# {project_name}\n\n{project_summary}\n\nGoal: {goal}\n",
+                encoding="utf-8",
+            )
+            turns = [
+                DialogueTurn(
+                    question="What does it do?",
+                    user_answer="A tiny planning agent for ideas",
+                    bot_answer="So it helps you explain the idea first?",
+                    objectivity_score=80,
+                    idea_scores={
+                        "cohesion_score": 80,
+                        "complexity_score": 45,
+                        "technicality_score": 55,
+                        "feasibility_score": 70,
+                    },
+                    intent="idea_turn",
+                )
+            ]
+
+            summary = save_summary(context, context.llm, turns)
+
+            self.assertTrue(summary)
+            self.assertFalse(output_dir.exists())
+
+            handoff_path = save_packing(
+                context,
+                context.llm,
+                turns,
+                template_path=template,
+                output_dir=output_dir,
+            )
+
+            self.assertTrue(handoff_path.exists())
+            handoff = handoff_path.read_text(encoding="utf-8")
+            self.assertIn("Python Excel parser", handoff)
+            self.assertIn("Read Excel columns", handoff)
+
+    def test_summary_prompt_includes_web_research_analysis(self) -> None:
+        llm = DummyLLM()
+        turns = [
+            DialogueTurn(
+                question="What does it do?",
+                user_answer="A tiny planning agent for ideas",
+                bot_answer="So it helps you explain the idea first?",
+                objectivity_score=80,
+                idea_scores={
+                    "cohesion_score": 80,
+                    "complexity_score": 45,
+                    "technicality_score": 55,
+                    "feasibility_score": 70,
+                },
+                intent="idea_turn",
+            )
+        ]
+
+        build_summary(
+            llm,
+            turns,
+            web_research_analysis="External analysis says competitors already exist.",
+        )
+
+        self.assertIn("External analysis says competitors already exist.", llm.last_prompt)
+
+    def test_parse_search_queries_from_json(self) -> None:
+        queries = parse_search_queries(
+            '{"queries":["python excel parser","excel to json python","python excel parser"]}'
+        )
+
+        self.assertEqual(queries, ["python excel parser", "excel to json python"])
+
+    def test_web_page_analysis_uses_fetched_page_text(self) -> None:
+        llm = DummyLLM()
+        analysis = analyze_web_pages(
+            llm,
+            ["python excel parser"],
+            [
+                WebSearchResult(
+                    title="openpyxl docs",
+                    url="https://example.com/openpyxl",
+                    snippet="Read and write Excel files.",
+                )
+            ],
+            [
+                WebPageText(
+                    title="openpyxl",
+                    url="https://example.com/openpyxl",
+                    text="openpyxl can read xlsx files and access worksheets, rows, and cells.",
+                )
+            ],
+        )
+
+        self.assertIn("openpyxl", llm.last_prompt)
+        self.assertIn("xlsx files", llm.last_prompt)
+        self.assertIn("External page analysis", analysis)
+
     def test_little_director_selects_modes_by_objectivity(self) -> None:
-        self.assertEqual(build_prompt_little_director(20).mode, "concrete_grounding")
-        self.assertEqual(build_prompt_little_director(70).mode, "fact_exploration")
-        self.assertEqual(build_prompt_little_director(90).mode, "context_deepening")
+        self.assertEqual(build_prompt_little_director(20).mode, "idea_grounding")
+        self.assertEqual(build_prompt_little_director(70).mode, "idea_clarification")
+        self.assertEqual(build_prompt_little_director(90).mode, "idea_stress_test")
 
     def test_generate_question_includes_director_block(self) -> None:
         llm = DummyLLM()
@@ -369,7 +569,7 @@ class ContextMemoryTests(unittest.TestCase):
             ],
         )
 
-        self.assertIn("Director mode: context_deepening", llm.last_prompt)
+        self.assertIn("Director mode: idea_stress_test", llm.last_prompt)
         self.assertIn("Мой следующий ход:", llm.last_prompt)
         self.assertTrue(question)
 

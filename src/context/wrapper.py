@@ -142,10 +142,20 @@ class ContextualLLM:
 
     @staticmethod
     def _format_memory(memory: MemoryMatch) -> str:
-        objectivity = memory.meta.get("objectivity_score", "unknown")
+        idea_scores = memory.meta.get("idea_scores")
+
+        if isinstance(idea_scores, dict):
+            score_bits = ", ".join(
+                f"{key.replace('_score', '')}={value}"
+                for key, value in idea_scores.items()
+            )
+        else:
+            objectivity = memory.meta.get("objectivity_score", "unknown")
+            score_bits = f"cohesion={objectivity}"
+
         return (
             f"- [{memory.record_type}] {memory.text} | "
-            f"objectivity={objectivity} | relevance={memory.score:.2f}"
+            f"{score_bits} | relevance={memory.score:.2f}"
         )
 
     @staticmethod

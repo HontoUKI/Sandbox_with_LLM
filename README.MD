@@ -1,54 +1,46 @@
-# Dialogue Bot: Daria
+# Little-agent-planner: Lisa
 
 ![Prototype](https://img.shields.io/badge/status-prototype-orange)
 ![Ollama](https://img.shields.io/badge/LLM-Ollama%20required-blue)
-[![CI](https://github.com/HontoUKI/Sandbox_with_LLM/actions/workflows/ci.yml/badge.svg?branch=self-esteem)](https://github.com/HontoUKI/Sandbox_with_LLM/actions/workflows/ci.yml)
 ![License](https://img.shields.io/badge/license-MIT-green)
-
-## For Developers And Reviewers
-
-Start with [docs/START_HERE.md](docs/START_HERE.md). It gives the fastest overview of the runtime, flow, storage, tests, and review checklist.
-
-Deeper technical notes:
-
-- [docs/REQUEST_PATH.md](docs/REQUEST_PATH.md) - how user answers flow through the system and how the summary reveals strengths.
-- [docs/CONTEXT_SPECS.md](docs/CONTEXT_SPECS.md) - memory, vector, and metadata formats.
 
 ## What Is This Project?
 
-This is a prototype CLI dialogue bot named **Daria**. She conducts natural, empathetic conversations with users, helping them open up about their experiences. Then, in a final summary, she reveals the real strengths they may have underestimated.
+Lisa is a prototype CLI little-agent planner. She talks through early ideas with
+the user, asks naive but pointed questions, and helps turn vague intention into
+an implementation-shaped brief.
 
-### The Problem
+Her base character is a curious teenager: direct, simple, sometimes skeptical,
+and focused on making the user explain the idea clearly.
 
-People often downplay their own achievements, skills, and judgment because emotions feel more vivid than facts. They focus on what went wrong and minimize what they actually accomplished.
+## Current Behavior
 
-### The Solution
-
-Daria:
-1. **Listens without judgment** during the dialogue (no assessment shown)
-2. **Extracts concrete facts** and implicit capabilities from what users share
-3. **Reveals strengths honestly** in the final summary—not flattery, but real observations
-4. **Notes self-minimization** when she sees the user being too harsh
-
-The dialogue feels like talking to a friend. The summary is where the honest reflection happens.
-
-## Key Features
-
-- **Natural dialogue**: Daria sounds like a friend, not a bot or interviewer
-- **Implicit strength detection**: The system recognizes capabilities users may have downplayed
-- **No mid-dialogue scoring**: Objectivity is computed internally but only used to guide questions, never shown to the user
-- **Strength-focused summary**: The final summary explicitly highlights what the user demonstrated or overlooked
-- **Honest without flattery**: Daria does not flatter or minimize real limitations
-- **Memory-backed**: All dialogue is stored as structured JSONL for future context
+- Ordinary turns are LLM-first. There are no local response fallbacks.
+- Lisa stores user and assistant dialogue in JSONL for recent-history and vector context.
+- The extractor scores each idea turn on four 0-100 axes:
+  - `cohesion_score`
+  - `complexity_score`
+  - `technicality_score`
+  - `feasibility_score`
+- `/summary` produces an objective idea review: weak assumptions, risks,
+  implementation steps, and difficulty estimates.
+- `/summary` may run multi-step web research to improve evaluation. Lisa first
+  asks the LLM to propose search queries, then searches DuckDuckGo, fetches a
+  few pages, analyzes them, and only then writes the summary. This can take
+  longer.
+- Web research is stored only as compact analysis plus source titles/URLs in
+  `summaries.jsonl`; raw site content is not stored.
+- `/packing` creates a project handoff Markdown file from the latest summary and
+  dialogue, using [docs/HANDOFF_TEMPLATE.md](docs/HANDOFF_TEMPLATE.md).
 
 ## Requirements
 
 - Python 3.11+
-- Ollama with a language model (required for dialogue generation and summaries)
+- Ollama with a chat model and embedding model
+- Network access for `/summary` web research
 
-Example models: `llama3`, `mistral`, `neural-chat`, etc.
-
-The bot is LLM-first. There is no fallback mode if Ollama is unavailable.
+The bot is LLM-first. If Ollama is unavailable, dialogue and summaries fail
+instead of using canned local replies.
 
 ## Setup
 
@@ -59,23 +51,7 @@ pip install -r requirements.txt
 Copy-Item .env.example .env
 ```
 
-Edit `.env`:
-
-```
-OLLAMA_HOST=http://127.0.0.1:11434
-OLLAMA_MODEL=llama3
-OLLAMA_EMBED_MODEL=nomic-embed-text
-QUESTION_COUNT=5
-OBJECTIVITY_THRESHOLD=50
-```
-
-## Running The Bot
-
-`requirements.txt` is currently empty because the prototype uses only the Python standard library.
-
-## Configuration
-
-Edit `.env` after copying [.env.example](.env.example):
+Example `.env`:
 
 ```env
 OLLAMA_CHAT=http://127.0.0.1:11434/api/chat
@@ -95,19 +71,20 @@ USER_NAME=User
 python main.py
 ```
 
-Daria now runs as open-ended just-chatting. Ordinary turns store user and
-assistant messages for recent-history and vector support, but do not extract
-facts immediately. Type `/summary` when you want the summary; that command
-generates the summary and runs fact extraction for memory. Type `/exit` to quit.
+Commands:
 
-Accepted user content and extracted facts are stored locally in:
+- `/summary` - objective idea evaluation, with optional web research.
+- `/packing` - writes a handoff Markdown file to `.local/`.
+- `/exit` or `/quit` - quit.
+
+Runtime data is stored locally:
 
 - `user_data/content.jsonl`
 - `user_data/memories.jsonl`
 - `user_data/summaries.jsonl`
 - `user_data/vectors.jsonl`
 
-These files are ignored by git because they contain user-specific memory.
+These files are ignored by git.
 
 ## Tests
 
@@ -117,69 +94,49 @@ python -m unittest discover -s tests
 
 ## Integration Scenarios
 
-`tools.scenario_runner` uses the real Ollama configured in `.env`. It is meant
-for module-level smoke checks after local changes, while unit tests keep using
-fake or mocked LLMs.
+`tools.scenario_runner` uses the real Ollama configured in `.env`.
 
-The runner includes a supportive conversation scenario where the user talks
-about fatigue and self-doubt, Daria keeps the last 5 stored messages as
-immediate history, and vector search adds relevant older context without
-duplicating the recent history window.
+Run all scenarios:
 
 ```powershell
 python -m tools.scenario_runner
 ```
 
-Maria-style replay from a scenario JSON writes a transcript JSON and Markdown
-review summary:
+Replay the Excel parser idea scenario and write transcript artifacts:
 
 ```powershell
-python -m tools.scenario_runner --scenario tools/scenario_runner/scenarios/supportive_conversation.json --out-dir cache/scenario_runner
+python -m tools.scenario_runner --scenario tools/scenario_runner/scenarios/excel_parser_idea.json --out-dir cache/scenario_runner
 ```
 
-To keep scenario JSONL output for inspection:
+The scenario includes `/summary` and `/packing`; the packing handoff is written
+under the scenario artifact directory.
 
-```powershell
-python -m tools.scenario_runner --data-dir cache/scenario_runner
-```
-
-Tests also write the final built prompt to:
+An example handoff generated from that scenario is committed at:
 
 ```text
-cache/final_prompt.log
+example/excel-to-json-parser_handoff.md
 ```
-
-Open that file after tests to check that the LLM prompt is not polluted by broken encoding, irrelevant memory, or unsupported claims.
-
-## CI
-
-GitHub Actions runs on push and pull request for:
-
-- Ubuntu and Windows
-- Python 3.11 and 3.12
-- `py_compile`
-- `unittest`
 
 ## File Structure
 
 ```text
-main.py                 CLI entry point
-src/llm.py              Ollama HTTP wrapper
-src/context/storage.py  JSONL storage
-src/context/extractor.py objective fact and search query extraction
-src/context/build_prompt_little_director.py next-question direction from objectivity meta
-src/context/manager.py  memory write/retrieval logic
-src/context/wrapper.py  LLM wrapper with memory injection
-tools/scenario_runner/  real Ollama integration scenarios
-tests/                  unittest suite
-docs/                   project notes and implementation specs
+main.py                                      CLI entry point, commands, summary, packing
+src/llm.py                                   Ollama HTTP wrapper
+src/context/storage.py                       JSONL storage
+src/context/extractor.py                     idea extraction and four score axes
+src/context/build_prompt_little_director.py  next-question direction by cohesion
+src/context/manager.py                       memory writes, summaries, research analysis
+src/context/wrapper.py                       prompt construction with memory context
+tools/scenario_runner/                       real Ollama integration scenarios
+tests/                                       unittest suite
+docs/                                        project notes and templates
+example/                                     generated handoff example
 ```
 
-## What Can You Do With This Code?
+## Notes
 
-Try it yourself. Use it as a small experiment in self-dialogue, fact retrieval, and LLM-assisted reflection.
-
-It is not therapy, a diagnosis tool, or a replacement for professional help. It is a prototype for making self-reflection less vague and more evidence-based.
+This is a prototype for idea clarification and implementation planning. It is
+not a therapy tool, diagnosis tool, or replacement for professional advice.
 
 ## License
 

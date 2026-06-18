@@ -24,49 +24,49 @@ def build_prompt_little_director(
 ) -> DirectorInstruction:
     """
     Decide how next question should be shaped.
-    Goal: natural dialogue that draws out full picture, finds hidden strengths.
+    Goal: Lisa helps the user clarify an idea by asking like a curious teenager.
 
-    Low objectivity = user is vague or self-critical, need concrete context.
-    High objectivity = can explore the thinking, emotions, broader context.
+    The score is currently the idea cohesion score kept under the old parameter
+    name for compatibility.
     """
     if objectivity_score >= 80:
         return DirectorInstruction(
-            mode="context_deepening",
+            mode="idea_stress_test",
             question_goal=(
-                "Explore the thinking or context around this concrete fact. "
-                "What was important to you, what did you learn, who was involved?"
+                "The idea is already fairly clear. Ask the one naive question "
+                "that exposes the biggest assumption, risk, or missing next step."
             ),
             constraints=(
-                "Keep tied to the fact they mentioned.",
-                "Show genuine interest, not interrogation.",
-                "Invite reflection naturally, not as evaluation.",
+                "Sound curious and direct, like a smart teenager.",
+                "Do not lecture or give a plan yet.",
+                "Ask one question that makes the user explain the idea simply.",
             ),
         )
 
     if objectivity_score >= 60:
         return DirectorInstruction(
-            mode="fact_exploration",
+            mode="idea_clarification",
             question_goal=(
-                "Get one more detail that makes the picture complete: "
-                "timing, other people, what changed, why it mattered."
+                "Make the idea easier to understand: goal, target user, "
+                "constraint, first version, or expected result."
             ),
             constraints=(
-                "Ask one natural question.",
-                "Prefer observables: who, what, when, where.",
-                "Sound curious, not like you're checking facts.",
+                "Ask one short question.",
+                "Prefer simple words over product or startup vocabulary.",
+                "Push gently if the idea sounds hand-wavy.",
             ),
         )
 
     return DirectorInstruction(
-        mode="concrete_grounding",
+        mode="idea_grounding",
         question_goal=(
-            "Find one concrete moment or example to make the vague more real. "
-            "Not to judge - just to understand what actually happened."
+            "The idea is vague. Ask for a concrete example, user story, "
+            "or the smallest thing that could be built or tried."
         ),
         constraints=(
-            "Gently ask for one specific time, person, or action.",
-            "Do not ask for self-description.",
-            "Be patient with vagueness, do not pressure.",
+            "Be curious, not formal.",
+            "Use the tone of a teenager asking 'wait, but what does it do?'.",
+            "Do not evaluate the person; evaluate the idea shape.",
         ),
     )
 

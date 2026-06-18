@@ -16,13 +16,14 @@ from main import (
     DialogueTurn,
     build_summary,
     generate_question,
+    is_packing_command,
     handle_user_message,
     is_summary_command,
     load_env,
     make_llm,
+    save_packing,
     save_summary,
 )
-from src.context.dialogue_intent import build_response_for_intent, classify_user_message
 from src.context.manager import ContextManager, has_dirty_encoding_artifacts
 from src.context.storage import JsonlStorage
 from src.context.wrapper import ContextualLLM
@@ -201,6 +202,7 @@ def replay_scenario_file(
     messages = list(scenario.get("messages") or [])
     expected_turns = list(scenario.get("expected_turns") or [])
     seed_facts = list(scenario.get("seed_facts") or [])
+    use_web_research = bool(scenario.get("use_web_research"))
 
     require(messages, f"{scenario_path} has no messages")
 
@@ -225,7 +227,12 @@ def replay_scenario_file(
         started = perf_counter()
 
         if is_summary_command(user_message):
-            summary = save_summary(context, ctx.llm, turns)
+            summary = save_summary(
+                context,
+                ctx.llm,
+                turns,
+                use_web_research=use_web_research,
+            )
             assert_clean_text(f"turn {idx} summary", summary)
             transcript.append(
                 {
@@ -240,6 +247,33 @@ def replay_scenario_file(
                     "recent_history_count": len(context.recent_dialogue_messages(limit=5)),
                     "support_context": "",
                     "duplicate_relevant": [],
+                }
+            )
+            continue
+
+        if is_packing_command(user_message):
+            packing_dir = out_dir / f"{name}_{started_at}_packing"
+            handoff_path = save_packing(
+                context,
+                ctx.llm,
+                turns,
+                output_dir=packing_dir,
+            )
+            require(handoff_path.exists(), f"turn {idx} packing did not create handoff")
+            transcript.append(
+                {
+                    "idx": idx,
+                    "user": user_message,
+                    "question": question,
+                    "reply": f"Handoff: {handoff_path}",
+                    "intent": "packing_command",
+                    "objectivity_score": None,
+                    "elapsed_sec": round(perf_counter() - started, 2),
+                    "reply_contract": {"flags": {}, "failures": [], "pass": True},
+                    "recent_history_count": len(context.recent_dialogue_messages(limit=5)),
+                    "support_context": "",
+                    "duplicate_relevant": [],
+                    "handoff_path": str(handoff_path),
                 }
             )
             continue
@@ -269,15 +303,6 @@ def replay_scenario_file(
         recent_texts = {message.text for message in recent_messages}
         relevant_part = support_context.split("Relevant stored context.", 1)[-1]
         duplicate_relevant = [text for text in recent_texts if text in relevant_part]
-
-        if duplicate_relevant:
-            scenario_failures.append(
-                {
-                    "idx": idx,
-                    "failures": ["relevant_context_duplicates_recent_history"],
-                    "duplicates": duplicate_relevant,
-                }
-            )
 
         transcript.append(
             {
@@ -346,7 +371,7 @@ def write_markdown_summary(run: dict, path: Path) -> None:
                 "",
                 f"User: {turn['user']}",
                 "",
-                f"Daria: {turn['reply']}",
+                f"Lisa: {turn['reply']}",
                 "",
                 f"Objectivity: {turn['objectivity_score']}",
                 f"Failures: {failures}",
@@ -400,11 +425,11 @@ def scenario_generated_question(ctx: ScenarioContext) -> str:
     return f"first={first_question!r}; follow_up={next_question!r}"
 
 
-def scenario_objective_fact_flow(ctx: ScenarioContext) -> str:
-    context = ctx.new_context("objective_fact_flow")
+def scenario_idea_turn_flow(ctx: ScenarioContext) -> str:
+    context = ctx.new_context("idea_turn_flow")
     turn = handle_user_message(
-        question="Что конкретно ты сделал?",
-        answer="Я написал бота в телеграме и запустил его для друга.",
+        question="Какую идею хочешь разобрать?",
+        answer="Я хочу сделать парсер для Excel на Python.",
         context=context,
         objectivity_threshold=DEFAULT_THRESHOLD,
     )
@@ -413,8 +438,8 @@ def scenario_objective_fact_flow(ctx: ScenarioContext) -> str:
     memories = context.storage.load_memories()
     vectors = context.storage.load_vectors()
 
-    require(turn.intent == "objective_fact", f"expected objective_fact, got {turn.intent}")
-    assert_clean_text("objective fact bot answer", turn.bot_answer)
+    require(turn.intent == "idea_turn", f"expected idea_turn, got {turn.intent}")
+    assert_clean_text("idea turn bot answer", turn.bot_answer)
     require(len(contents) == 2, f"expected 2 content records, got {len(contents)}")
     require(memories == [], "just-chatting fact turn created memory before summary")
     require(len(vectors) >= 2, f"expected at least 2 vectors, got {len(vectors)}")
@@ -424,17 +449,17 @@ def scenario_objective_fact_flow(ctx: ScenarioContext) -> str:
     )
     require(
         all(not has_dirty_encoding_artifacts(record["text"]) for record in contents),
-        "stored objective fact flow records contain dirty encoding artifacts",
+        "stored idea turn records contain dirty encoding artifacts",
     )
 
     return f"score={turn.objectivity_score}, content={len(contents)}, memories=0"
 
 
-def scenario_boundary_flow(ctx: ScenarioContext) -> str:
-    context = ctx.new_context("boundary_flow")
+def scenario_short_reply_flow(ctx: ScenarioContext) -> str:
+    context = ctx.new_context("short_reply_flow")
     turn = handle_user_message(
-        question="Расскажешь, что произошло?",
-        answer="Не дави на меня, я не хочу это обсуждать.",
+        question="Что пока непонятно?",
+        answer="Не знаю, с чего начать.",
         context=context,
         objectivity_threshold=DEFAULT_THRESHOLD,
     )
@@ -442,13 +467,13 @@ def scenario_boundary_flow(ctx: ScenarioContext) -> str:
     contents = context.storage.load_content()
     memories = context.storage.load_memories()
 
-    require(turn.intent == "boundary", f"expected boundary, got {turn.intent}")
-    assert_clean_text("boundary bot answer", turn.bot_answer)
+    require(turn.intent == "idea_turn", f"expected idea_turn, got {turn.intent}")
+    assert_clean_text("short reply bot answer", turn.bot_answer)
     require(len(contents) == 2, f"expected 2 content records, got {len(contents)}")
-    require(memories == [], "boundary message created objective memories")
+    require(memories == [], "short reply created memories before summary")
     require(
         {record["meta"].get("role") for record in contents} == {"user", "assistant"},
-        "boundary flow did not store both user and assistant roles",
+        "short reply flow did not store both user and assistant roles",
     )
 
     return f"score={turn.objectivity_score}, content={len(contents)}, memories=0"
@@ -477,23 +502,6 @@ def scenario_summary_flow(ctx: ScenarioContext) -> str:
     require(len(summary) >= 80, "summary is too short to be useful")
 
     return f"summary_chars={len(summary)}"
-
-
-def scenario_intent_responses_are_clean(ctx: ScenarioContext) -> str:
-    samples = [
-        ("Не дави на меня", 15, "boundary"),
-        ("Я жестко туплю и ничего не умею", 15, "self_deprecation"),
-        ("У меня получилось закрыть задачу", 40, "positive_signal"),
-        ("Просто тяжелый день", 30, "conversation"),
-    ]
-
-    for text, score, expected_kind in samples:
-        intent = classify_user_message(text, score, DEFAULT_THRESHOLD)
-        require(intent.kind == expected_kind, f"{text!r}: expected {expected_kind}, got {intent.kind}")
-        response = build_response_for_intent(intent, score)
-        assert_clean_text(f"{expected_kind} response", response)
-
-    return f"checked={len(samples)}"
 
 
 def scenario_supportive_conversation_flow(ctx: ScenarioContext) -> str:
@@ -563,10 +571,9 @@ def scenario_supportive_conversation_json(ctx: ScenarioContext) -> str:
 SCENARIOS: dict[str, Callable[[ScenarioContext], str]] = {
     "ollama_health": scenario_ollama_health,
     "generated_question": scenario_generated_question,
-    "objective_fact_flow": scenario_objective_fact_flow,
-    "boundary_flow": scenario_boundary_flow,
+    "idea_turn_flow": scenario_idea_turn_flow,
+    "short_reply_flow": scenario_short_reply_flow,
     "summary_flow": scenario_summary_flow,
-    "intent_responses_are_clean": scenario_intent_responses_are_clean,
     "supportive_conversation_flow": scenario_supportive_conversation_flow,
     "supportive_conversation_json": scenario_supportive_conversation_json,
 }

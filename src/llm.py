@@ -1,5 +1,5 @@
 """
-Small Ollama client used by the self-esteem bot.
+Small Ollama client used by the little-agent planner bot.
 """
 
 from __future__ import annotations
@@ -103,15 +103,15 @@ class OllamaLLM:
 
     def objectivity_score(self, text: str) -> int:
         """
-        Estimate whether the text names observable facts.
+        Estimate whether the text describes a coherent idea.
 
         Returns an integer from 0 to 100:
-        0 means fully vague or self-judging, 100 means concrete and observable.
+        0 means fragmented or vague, 100 means clear and easy to question.
         """
         prompt = (
-            "Rate whether the user answer contains an observable fact for a "
-            "self-esteem bot.\n"
-            "Look for a concrete action, situation, or result. Return only JSON "
+            "Rate the cohesion of the user's idea for Lisa, a curious teenage "
+            "little-agent planner.\n"
+            "Look for a clear goal, logic, constraint, or next step. Return only JSON "
             "like {\"score\": 0}, where score is from 0 to 100.\n\n"
             f"User answer: {text}"
         )

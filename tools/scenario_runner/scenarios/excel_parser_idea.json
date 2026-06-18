@@ -1,0 +1,34 @@
+{
+  "name": "excel_parser_idea",
+  "description": "User wants to build a Python parser for Excel files. Lisa should clarify the idea, produce an objective implementation summary, and pack a handoff.",
+  "use_web_research": true,
+  "seed_facts": [],
+  "messages": [
+    "Я хочу сделать парсер для excell на пайтон",
+    "Хочу, чтобы он читал таблицу, находил нужные колонки и собирал из них нормальный JSON для дальнейшей обработки.",
+    "/summary",
+    "/packing"
+  ],
+  "expected_turns": [
+    {
+      "no_numbered_list": true,
+      "max_reply_chars": 700
+    },
+    {
+      "no_numbered_list": true,
+      "max_reply_chars": 700
+    },
+    {
+      "max_reply_chars": 3500
+    },
+    {
+      "max_reply_chars": 500
+    }
+  ],
+  "manual_checks": [
+    "Lisa should notice that 'Excel parser' needs decisions about file format, column mapping, validation, malformed rows, and output schema.",
+    "Summary should evaluate feasibility and implementation steps instead of only encouraging the user.",
+    "Packing should create a handoff markdown file under the scenario artifact directory.",
+    "The final summary should not invent requirements that were not stated."
+  ]
+}
